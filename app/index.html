@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0, user-scalable=no" name="viewport"/>
+    <title>skynav</title>
+    <meta content="View Earth's position and orientation in space relative to the Sun and other celestial objects." name="description"/>
+
+    <link data-trunk data-wasm-opt="2" data-wasm-opt-params="-all" rel="rust"/>
+    <base data-trunk-public-url/>
+
+    <meta content="#0b0d12" media="(prefers-color-scheme: dark)" name="theme-color">
+    <meta content="#0b0d12" media="(prefers-color-scheme: light)" name="theme-color">
+
+    <style>
+        html {
+            touch-action: manipulation;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            background: #0b0d12;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            outline: none;
+        }
+
+        .centered {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #f0f0f0;
+        }
+
+        .lds-dual-ring {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+        }
+
+        .lds-dual-ring:after {
+            content: " ";
+            display: block;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 3px solid #6ea8fe;
+            border-color: #6ea8fe transparent #6ea8fe transparent;
+            animation: lds-dual-ring 1.2s linear infinite;
+        }
+
+        @keyframes lds-dual-ring {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+<body>
+<canvas id="app_canvas"></canvas>
+
+<div class="centered" id="loading_text">
+    <noscript>You need JavaScript to use this website.</noscript>
+    <p style="font-size:16px">Loading…</p>
+    <div class="lds-dual-ring"></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,16 @@
+[package]
+name = "skynav"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+astro = { workspace = true }
+bincode = { workspace = true }
+glam = { workspace = true }
+hifitime = { workspace = true }
+serde = { workspace = true }
+sofars = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+vsop87 = { workspace = true }

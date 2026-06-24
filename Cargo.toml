@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["app", "core", "parse", "server"]
+default-members = ["core", "server"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+skynav = { path = "core" }
+astro = "2.0.0"
+bincode = "2.0.1"
+glam = "0.33.1"
+hifitime = "4.3.0"
+serde = { version = "1.0.228", features = ["derive"] }
+sofars = "0.6.1"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+vsop87 = "3.0.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

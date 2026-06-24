@@ -1,0 +1,37 @@
+services:
+  server:
+    container_name: skynav
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "61330:61330"
+
+  server-dev:
+    container_name: skynav
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:61330:61330"
+    volumes:
+      - ..:/skynav
+      - skynav_cargo_target:/skynav/target
+      - skynav_cargo_registry:/usr/local/cargo/registry
+    init: true
+    command: >-
+      cargo watch -w core -w server -w app --delay 3
+      -s "cd /skynav/app && trunk build --release --filehash false
+      && cd /skynav && cargo run --bin skynav-server"
+    environment:
+      - STATIC_DIR=/skynav/app/dist
+    profiles: [ dev ]
+
+volumes:
+  skynav_cargo_target:
+  skynav_cargo_registry:

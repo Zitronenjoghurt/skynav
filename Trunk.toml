@@ -1,0 +1,10 @@
+[build]
+target = "app/index.html"
+
+[watch]
+watch = ["app", "core"]
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8080
+open = false

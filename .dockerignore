@@ -1,0 +1,6 @@
+.git
+target
+dist
+assets
+.env
+recipe.json

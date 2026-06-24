@@ -1,0 +1,33 @@
+[package]
+name = "skynav-app"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["wasm32-unknown-unknown"]
+
+[dependencies]
+skynav = { workspace = true }
+bytemuck = { version = "1.23", features = ["derive"] }
+eframe = { version = "0.34.2", default-features = false, features = ["persistence", "wgpu"] }
+egui = "0.34.2"
+egui_dock = { version = "0.19.1", features = ["serde"] }
+egui_extras = { version = "0.34.2", default-features = false }
+egui-phosphor = { version = "0.12.0", features = ["regular"] }
+glam = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+hifitime = { workspace = true }
+log = "0.4.29"
+serde = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { version = "0.34.2", default-features = false, features = ["persistence", "wayland", "wgpu", "x11"] }
+env_logger = "0.11.8"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+js-sys = "0.3.98"
+wasm-bindgen-futures = "0.4.71"
+web-sys = { version = "0.3.98", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
