@@ -13,8 +13,13 @@ pub struct OrbitCamera {
     pub yaw: f32,
     pub pitch: f32,
     pub distance: f32,
+    /// Point the camera orbits and looks at (lets it pan to a selected body).
+    #[serde(default)]
+    pub target: Vec3,
     #[serde(skip)]
     goal: Option<[f32; 3]>,
+    #[serde(skip)]
+    goal_target: Option<Vec3>,
 }
 
 impl Default for OrbitCamera {
@@ -23,7 +28,9 @@ impl Default for OrbitCamera {
             yaw: 0.6,
             pitch: 0.4,
             distance: 3.2,
+            target: Vec3::ZERO,
             goal: None,
+            goal_target: None,
         }
     }
 }
@@ -34,8 +41,16 @@ impl OrbitCamera {
             yaw,
             pitch,
             distance,
+            target: Vec3::ZERO,
             goal: None,
+            goal_target: None,
         }
+    }
+
+    /// Smoothly pan to look top-down at `target` and zoom in to `distance`.
+    pub fn frame(&mut self, target: Vec3, distance: f32) {
+        self.goal_target = Some(target);
+        self.goal = Some([self.yaw, 1.30, distance]);
     }
 
     pub fn handle(&mut self, response: &egui::Response, ui: &egui::Ui) {
@@ -44,29 +59,42 @@ impl OrbitCamera {
             self.yaw -= delta.x * 0.008;
             self.pitch = (self.pitch + delta.y * 0.008).clamp(-1.45, 1.45);
             self.goal = None;
+            self.goal_target = None;
         }
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
                 self.distance = (self.distance * (1.0 - scroll * 0.0015)).clamp(1.3, 60.0);
                 self.goal = None;
+                self.goal_target = None;
             }
         }
         self.advance(ui);
     }
 
     fn advance(&mut self, ui: &egui::Ui) {
-        let Some(g) = self.goal else { return };
+        if self.goal.is_none() && self.goal_target.is_none() {
+            return;
+        }
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         let k = 1.0 - (-EASE * dt).exp();
-        self.yaw = lerp_angle(self.yaw, g[0], k);
-        self.pitch += (g[1] - self.pitch) * k;
-        self.distance += (g[2] - self.distance) * k;
-        if angle_diff(self.yaw, g[0]).abs() < 0.002 && (self.pitch - g[1]).abs() < 0.002 {
-            self.yaw = g[0];
-            self.pitch = g[1];
-            self.distance = g[2];
-            self.goal = None;
+        if let Some(g) = self.goal {
+            self.yaw = lerp_angle(self.yaw, g[0], k);
+            self.pitch += (g[1] - self.pitch) * k;
+            self.distance += (g[2] - self.distance) * k;
+            if angle_diff(self.yaw, g[0]).abs() < 0.002 && (self.pitch - g[1]).abs() < 0.002 {
+                self.yaw = g[0];
+                self.pitch = g[1];
+                self.distance = g[2];
+                self.goal = None;
+            }
+        }
+        if let Some(gt) = self.goal_target {
+            self.target += (gt - self.target) * k;
+            if self.target.distance(gt) < 0.01 {
+                self.target = gt;
+                self.goal_target = None;
+            }
         }
         ui.ctx().request_repaint();
     }
@@ -74,11 +102,11 @@ impl OrbitCamera {
     pub fn eye(&self) -> Vec3 {
         let (sp, cp) = self.pitch.sin_cos();
         let (sy, cy) = self.yaw.sin_cos();
-        self.distance * Vec3::new(cp * cy, cp * sy, sp)
+        self.target + self.distance * Vec3::new(cp * cy, cp * sy, sp)
     }
 
     pub fn view(&self) -> Mat4 {
-        Mat4::look_at_rh(self.eye(), Vec3::ZERO, Vec3::Z)
+        Mat4::look_at_rh(self.eye(), self.target, Vec3::Z)
     }
 
     pub fn proj(&self, aspect: f32) -> Mat4 {

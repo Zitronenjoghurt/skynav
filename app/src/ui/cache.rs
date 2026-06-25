@@ -5,7 +5,7 @@
 //! cache them in egui's temp store and recompute only when that key changes.
 
 use egui::Id;
-use skynav::{Body, DayEvents, RiseSet, Simulation, events};
+use skynav::{AstroEvent, Body, DayEvents, RiseSet, Simulation, events};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -42,5 +42,29 @@ pub fn body_rise_set(ui: &egui::Ui, sim: &Simulation, body: Body) -> RiseSet {
     }
     let value = events::body_rise_set(sim, body);
     ui.data_mut(|d| d.insert_temp(id, (key, value)));
+    value
+}
+
+/// Memoised window scan for the Events panel. Scanning costs thousands of
+/// ephemeris evaluations, so it must not run every frame.
+pub fn scan_events(
+    ui: &egui::Ui,
+    sim: &Simulation,
+    past_days: f64,
+    future_days: f64,
+) -> std::sync::Arc<Vec<AstroEvent>> {
+    let mut hasher = DefaultHasher::new();
+    day_key(sim).hash(&mut hasher);
+    past_days.to_bits().hash(&mut hasher);
+    future_days.to_bits().hash(&mut hasher);
+    let key = hasher.finish();
+    let id = Id::new("cache_scan_events");
+    if let Some((k, value)) = ui.data(|d| d.get_temp::<(u64, std::sync::Arc<Vec<AstroEvent>>)>(id))
+        && k == key
+    {
+        return value;
+    }
+    let value = std::sync::Arc::new(events::scan_events(sim, past_days, future_days));
+    ui.data_mut(|d| d.insert_temp(id, (key, value.clone())));
     value
 }

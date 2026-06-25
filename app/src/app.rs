@@ -3,12 +3,16 @@ use crate::gfx::{GlobeRenderer, LookAroundCamera, OrbitCamera, SkyRenderer};
 use crate::ui::Selection;
 use crate::ui::icons;
 use crate::ui::tabs::{SkyTabViewer, Tab, default_dock};
-use crate::ui::widgets::{GlobeLayers, OrbitCache, Scrubber, SkyLayers};
+use crate::ui::widgets::{
+    EventsFilter, GlobeLayers, OrbitCache, Scrubber, SkyLayers, SystemLayers,
+};
 use eframe::CreationContext;
 use egui::{CentralPanel, Panel, PopupCloseBehavior, TextEdit};
 use egui_dock::{DockArea, DockState, Style};
 use serde::{Deserialize, Serialize};
-use skynav::{Body, Constellation, Observer, Simulation, Star, catalog, constellations};
+use skynav::{
+    Body, Constellation, Observer, Simulation, Star, ViewWindow, catalog, constellations,
+};
 
 const STATE_KEY: &str = "skynav_state";
 
@@ -23,6 +27,8 @@ pub struct SkyNav {
     system_orbits: OrbitCache,
     sky_layers: SkyLayers,
     globe_layers: GlobeLayers,
+    system_layers: SystemLayers,
+    events_filter: EventsFilter,
     selection: Option<Selection>,
     last_selection: Option<Selection>,
     follow: bool,
@@ -40,6 +46,9 @@ struct PersistState {
     follow: bool,
     sky_layers: SkyLayers,
     globe_layers: GlobeLayers,
+    system_layers: SystemLayers,
+    events_filter: EventsFilter,
+    view: ViewWindow,
     globe_camera: OrbitCamera,
     system_camera: OrbitCamera,
     sky_camera: LookAroundCamera,
@@ -66,6 +75,8 @@ impl SkyNav {
             system_orbits: OrbitCache::default(),
             sky_layers: SkyLayers::default(),
             globe_layers: GlobeLayers::default(),
+            system_layers: SystemLayers::default(),
+            events_filter: EventsFilter::default(),
             selection: None,
             last_selection: None,
             follow: false,
@@ -90,6 +101,9 @@ impl SkyNav {
         self.follow = state.follow;
         self.sky_layers = state.sky_layers;
         self.globe_layers = state.globe_layers;
+        self.system_layers = state.system_layers;
+        self.events_filter = state.events_filter;
+        self.sim.view = state.view;
         self.globe_camera = state.globe_camera;
         self.system_camera = state.system_camera;
         self.sky_camera = state.sky_camera;
@@ -215,8 +229,10 @@ impl eframe::App for SkyNav {
                 stars: &self.stars,
                 constellations: &self.constellations,
                 system_orbits: &mut self.system_orbits,
+                system_layers: &mut self.system_layers,
                 sky_layers: &mut self.sky_layers,
                 globe_layers: &mut self.globe_layers,
+                events_filter: &mut self.events_filter,
                 selection: &mut self.selection,
                 follow: &mut self.follow,
                 to_open: &mut to_open,
@@ -252,6 +268,9 @@ impl eframe::App for SkyNav {
             follow: self.follow,
             sky_layers: self.sky_layers,
             globe_layers: self.globe_layers,
+            system_layers: self.system_layers,
+            events_filter: self.events_filter.clone(),
+            view: self.sim.view.clone(),
             globe_camera: self.globe_camera,
             system_camera: self.system_camera,
             sky_camera: self.sky_camera,

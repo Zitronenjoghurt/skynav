@@ -12,7 +12,7 @@ version = "0.1.0"
 skynav = { path = "core" }
 astro = "2.0.0"
 bincode = "2.0.1"
-glam = "0.33.1"
+glam = { version = "0.33.1", features = ["serde"] }
 hifitime = "4.3.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sofars = "0.6.1"

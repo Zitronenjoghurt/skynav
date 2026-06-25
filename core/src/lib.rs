@@ -7,19 +7,23 @@ pub mod events;
 pub mod frames;
 pub mod math;
 pub mod observer;
+pub mod places;
 pub mod simulation;
 pub mod sky;
 pub mod time;
+pub mod view;
 
 pub use body::Body;
 pub use catalog::Star;
 pub use constellations::Constellation;
 pub use ephemeris::{AnalyticEphemeris, Ephemeris};
-pub use events::{DayEvents, RiseSet};
+pub use events::{AstroEvent, DayEvents, EventCategory, RiseSet};
 pub use observer::Observer;
+pub use places::Capital;
 pub use simulation::Simulation;
 pub use sky::Horizontal;
 pub use time::{Epoch, SimClock};
+pub use view::{Patch, ViewWindow};
 
 #[cfg(test)]
 mod tests {
@@ -73,6 +77,39 @@ mod tests {
         assert!(sunrise < sunset);
         let alt = sim.geometric_altitude_at(Body::Sun, sunrise).to_degrees();
         assert!((alt + 0.833).abs() < 0.1, "altitude at sunrise was {alt}");
+    }
+
+    #[test]
+    fn circumpolar_star_never_sets() {
+        let mut sim = Simulation::new(j2000());
+        sim.observer = Observer::new(80.0, 0.0, 0.0);
+        // A star near the north celestial pole is circumpolar at high latitude.
+        let start = Epoch::from_gregorian_utc(2026, 6, 25, 0, 0, 0, 0);
+        let rs = events::star_rise_set(&sim.observer, 0.0, 85f64.to_radians(), start);
+        assert!(rs.rise.is_none() && rs.set.is_none());
+        assert!(rs.transit_altitude > 0.0);
+    }
+
+    #[test]
+    fn far_future_does_not_panic() {
+        // The SOFA ephemeris is only valid 1900-2100; observing past it must
+        // fall back gracefully instead of panicking (issue: scrubbing to 2099+).
+        let mut sim = Simulation::new(Epoch::from_gregorian_utc_hms(2150, 6, 1, 0, 0, 0));
+        sim.observer = Observer::new(48.0, 11.0, 0.0);
+        assert!(sim.observed_body(Body::Mars).is_some());
+        let polaris = catalog::load_stars()
+            .into_iter()
+            .find(|s| s.name == "Polaris")
+            .unwrap();
+        assert!(sim.observed_star(&polaris).is_some());
+    }
+
+    #[test]
+    fn scan_finds_a_sunrise() {
+        let mut sim = Simulation::new(Epoch::from_gregorian_utc_hms(2026, 3, 20, 12, 0, 0));
+        sim.observer = Observer::new(51.5, 0.0, 0.0);
+        let events = events::scan_events(&sim, 1.0, 2.0);
+        assert!(events.iter().any(|e| e.title == "Sunrise"));
     }
 
     #[test]

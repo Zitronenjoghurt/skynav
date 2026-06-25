@@ -2,8 +2,8 @@ use crate::gfx::{LookAroundCamera, OrbitCamera};
 use crate::ui::Selection;
 use crate::ui::icons;
 use crate::ui::widgets::{
-    BodiesPanel, EventsPanel, GlobeLayers, GlobeView, InfoPanel, ObserverPanel, OrbitCache,
-    SkyLayers, SkyView, SystemView, TimePanel, VisiblePanel,
+    BodiesPanel, EventsFilter, EventsPanel, GlobeLayers, GlobeView, InfoPanel, ObserverPanel,
+    OrbitCache, SkyLayers, SkyView, SystemLayers, SystemView, TimePanel, ViewPanel, VisiblePanel,
 };
 use egui_dock::{DockState, NodeIndex, NodePath, TabViewer};
 use skynav::{Constellation, Simulation, Star};
@@ -19,10 +19,11 @@ pub enum Tab {
     Observer,
     Bodies,
     Events,
+    View,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Globe,
         Tab::System,
         Tab::Sky,
@@ -32,6 +33,7 @@ impl Tab {
         Tab::Observer,
         Tab::Bodies,
         Tab::Events,
+        Tab::View,
     ];
 
     pub fn title(&self) -> String {
@@ -44,7 +46,8 @@ impl Tab {
             Tab::Time => (icons::CLOCK, "Time"),
             Tab::Observer => (icons::MAP_PIN, "Observer"),
             Tab::Bodies => (icons::PLANET, "Bodies"),
-            Tab::Events => (icons::SUN_HORIZON, "Events"),
+            Tab::Events => (icons::CALENDAR_BLANK, "Events"),
+            Tab::View => (icons::BINOCULARS, "View"),
         };
         format!("{icon} {label}")
     }
@@ -63,6 +66,7 @@ pub fn default_dock() -> DockState<Tab> {
             Tab::Observer,
             Tab::Bodies,
             Tab::Events,
+            Tab::View,
         ],
     );
     dock
@@ -76,8 +80,10 @@ pub struct SkyTabViewer<'a> {
     pub stars: &'a [Star],
     pub constellations: &'a [Constellation],
     pub system_orbits: &'a mut OrbitCache,
+    pub system_layers: &'a mut SystemLayers,
     pub sky_layers: &'a mut SkyLayers,
     pub globe_layers: &'a mut GlobeLayers,
+    pub events_filter: &'a mut EventsFilter,
     /// Object selected across the Sky / System / Bodies views (shared highlight).
     pub selection: &'a mut Option<Selection>,
     /// Sky follow-cam: keep the selection centred as time advances.
@@ -110,6 +116,7 @@ impl TabViewer for SkyTabViewer<'_> {
                     self.system_camera,
                     self.system_orbits,
                     self.selection,
+                    self.system_layers,
                 ));
             }
             Tab::Sky => {
@@ -139,7 +146,10 @@ impl TabViewer for SkyTabViewer<'_> {
                 ui.add(BodiesPanel::new(self.sim, self.selection));
             }
             Tab::Events => {
-                ui.add(EventsPanel::new(self.sim));
+                ui.add(EventsPanel::new(self.sim, self.events_filter));
+            }
+            Tab::View => {
+                ui.add(ViewPanel::new(self.sim, self.sky_camera));
             }
         }
     }

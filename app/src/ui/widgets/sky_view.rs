@@ -130,6 +130,16 @@ impl SkyView<'_> {
             if star.magnitude > self.layers.mag_limit {
                 continue;
             }
+            if self.sim.view.enabled {
+                let h = star_horizontal(*dir);
+                if !self
+                    .sim
+                    .view
+                    .star_visible(star.magnitude, h.azimuth_deg(), h.altitude_deg())
+                {
+                    continue;
+                }
+            }
             let (size, brightness) = star_style(star.magnitude);
             instances.push(SkyInstance {
                 position: (*dir * RADIUS).to_array(),
@@ -226,6 +236,10 @@ impl SkyView<'_> {
     ) {
         let painter = ui.painter_at(rect);
 
+        if self.sim.view.enabled {
+            self.draw_view_patches(&painter, rect, view_proj);
+        }
+
         self.draw_selection(&painter, rect, view_proj, star_dirs);
 
         for (label, az) in [("N", 0.0), ("E", 90.0), ("S", 180.0), ("W", 270.0)] {
@@ -263,6 +277,7 @@ impl SkyView<'_> {
                     continue;
                 }
                 if let Some(h) = self.sim.observed_body(body)
+                    && self.in_view_h(h)
                     && let Some(p) = project(view_proj, enu(h), rect)
                 {
                     label_at(&painter, p, body.name(), Color32::from_rgb(200, 210, 230));
@@ -271,6 +286,7 @@ impl SkyView<'_> {
             for (star, dir) in self.stars.iter().zip(star_dirs) {
                 if star.magnitude < 1.8
                     && !star.name.is_empty()
+                    && self.star_in_view(star, *dir)
                     && let Some(p) = project(view_proj, *dir, rect)
                 {
                     label_at(&painter, p, &star.name, Color32::from_rgb(170, 180, 200));
@@ -283,6 +299,52 @@ impl SkyView<'_> {
         {
             self.identify(&painter, rect, view_proj, star_dirs, pointer);
         }
+    }
+
+    /// Outline each mapped viewing patch and label the active area.
+    fn draw_view_patches(&self, painter: &egui::Painter, rect: Rect, view_proj: Mat4) {
+        let accent = Color32::from_rgb(120, 200, 255);
+        for patch in &self.sim.view.patches {
+            let span = (patch.az_max_deg - patch.az_min_deg).rem_euclid(360.0);
+            let span = if span == 0.0 { 360.0 } else { span };
+            let mut border: Vec<(f64, f64)> = Vec::new();
+            const STEPS: usize = 24;
+            let (alt0, alt1) = (patch.alt_min_deg, patch.alt_max_deg);
+            for i in 0..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                border.push((patch.az_min_deg + span * t, alt0));
+            }
+            for i in 0..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                border.push((patch.az_max_deg, alt0 + (alt1 - alt0) * t));
+            }
+            for i in 0..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                border.push((patch.az_max_deg - span * t, alt1));
+            }
+            for i in 0..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                border.push((patch.az_min_deg, alt1 - (alt1 - alt0) * t));
+            }
+            let mut prev: Option<egui::Pos2> = None;
+            for (az, alt) in border {
+                let p = project(view_proj, enu(az_alt(az, alt)), rect);
+                if let (Some(a), Some(b)) = (prev, p) {
+                    painter.line_segment([a, b], Stroke::new(1.5, accent));
+                }
+                prev = p;
+            }
+        }
+        painter.text(
+            rect.left_bottom() + egui::vec2(8.0, -8.0),
+            Align2::LEFT_BOTTOM,
+            format!(
+                "Viewing area active (limit mag {:.1})",
+                self.sim.view.limiting_magnitude
+            ),
+            FontId::proportional(12.0),
+            accent,
+        );
     }
 
     fn layer_controls(&mut self, ui: &mut egui::Ui, rect: Rect) {
@@ -372,6 +434,7 @@ impl SkyView<'_> {
                 continue;
             }
             if let Some(h) = self.sim.observed_body(body)
+                && self.in_view_h(h)
                 && let Some(p) = project(view_proj, enu(h), rect)
             {
                 consider(p, Selection::Body(body));
@@ -379,12 +442,29 @@ impl SkyView<'_> {
         }
         for (i, (star, dir)) in self.stars.iter().zip(star_dirs).enumerate() {
             if star.magnitude <= self.layers.mag_limit
+                && self.star_in_view(star, *dir)
                 && let Some(p) = project(view_proj, *dir, rect)
             {
                 consider(p, Selection::Star(i));
             }
         }
         best.map(|(_, sel)| sel)
+    }
+
+    /// Whether a body direction is inside the mapped viewing area (always true
+    /// when the area is disabled).
+    fn in_view_h(&self, h: Horizontal) -> bool {
+        !self.sim.view.enabled || self.sim.view.contains(h.azimuth_deg(), h.altitude_deg())
+    }
+
+    fn star_in_view(&self, star: &Star, dir: Vec3) -> bool {
+        if !self.sim.view.enabled {
+            return true;
+        }
+        let h = star_horizontal(dir);
+        self.sim
+            .view
+            .star_visible(star.magnitude, h.azimuth_deg(), h.altitude_deg())
     }
 
     fn identify(
@@ -408,6 +488,7 @@ impl SkyView<'_> {
                 continue;
             }
             if let Some(h) = self.sim.observed_body(body)
+                && self.in_view_h(h)
                 && let Some(p) = project(view_proj, enu(h), rect)
             {
                 consider(p, body.name().to_string(), h);
@@ -415,6 +496,7 @@ impl SkyView<'_> {
         }
         for (star, dir) in self.stars.iter().zip(star_dirs) {
             if star.magnitude <= self.layers.mag_limit
+                && self.star_in_view(star, *dir)
                 && let Some(p) = project(view_proj, *dir, rect)
             {
                 let name = if star.name.is_empty() {

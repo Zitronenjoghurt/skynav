@@ -1158,6 +1158,9 @@ name = "glam"
 version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "898f5a568a84989b6c0f8caa50a93074b97dbdc58fc6d9543157bb4562758933"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "glow"

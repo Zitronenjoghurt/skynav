@@ -43,8 +43,15 @@ impl Widget for VisiblePanel<'_> {
         entries.sort_by(|a, b| b.altitude.total_cmp(&a.altitude));
 
         ui.scope(|ui| {
-            ui.label(RichText::new(format!("Above the horizon ({})", entries.len())).strong())
-                .on_hover_text("Bodies and bright named stars currently up, highest first.");
+            let suffix = if self.sim.view.enabled {
+                "  (within your viewing area)"
+            } else {
+                ""
+            };
+            ui.label(
+                RichText::new(format!("Above the horizon ({}){suffix}", entries.len())).strong(),
+            )
+            .on_hover_text("Bodies and bright named stars currently up, highest first.");
             ui.add_space(4.0);
 
             if entries.is_empty() {
@@ -111,6 +118,7 @@ impl VisiblePanel<'_> {
             }
             if let Some(h) = self.sim.observed_body(body)
                 && h.altitude >= 0.0
+                && self.sim.view.contains(h.azimuth_deg(), h.altitude_deg())
             {
                 entries.push(Entry {
                     altitude: h.altitude_deg() as f32,
@@ -132,9 +140,18 @@ impl VisiblePanel<'_> {
             if enu.z <= 0.0 {
                 continue;
             }
+            let altitude = enu.z.clamp(-1.0, 1.0).asin().to_degrees();
+            let azimuth = enu.x.atan2(enu.y).to_degrees().rem_euclid(360.0);
+            if !self
+                .sim
+                .view
+                .star_visible(star.magnitude, azimuth as f64, altitude as f64)
+            {
+                continue;
+            }
             entries.push(Entry {
-                altitude: enu.z.clamp(-1.0, 1.0).asin().to_degrees(),
-                azimuth: enu.x.atan2(enu.y).to_degrees().rem_euclid(360.0),
+                altitude,
+                azimuth,
                 label: star.name.clone(),
                 color: Color32::from_rgb(190, 200, 225),
                 selection: Selection::Star(i),

@@ -2,12 +2,39 @@ use crate::gfx::OrbitCamera;
 use crate::ui::Selection;
 use crate::ui::overlay::{label_at, project};
 use egui::{
-    Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2, Widget, pos2, vec2,
+    Align2, Color32, FontId, Frame, Id, Pos2, Rect, Response, Sense, Stroke, Vec2, Widget, pos2,
+    vec2,
 };
 use glam::{DVec3, Mat4, Vec3};
 use hifitime::Duration;
+use serde::{Deserialize, Serialize};
 use skynav::math::AU_KM;
 use skynav::{Body, Simulation};
+
+/// Render-space radius of the faked Moon orbit drawn around Earth in-scene.
+const MOON_ORBIT_R: f32 = 0.45;
+/// Camera distance below which the in-scene Earth-Moon system is drawn.
+const MOON_ZOOM_DIST: f32 = 16.0;
+
+/// Toggleable System-view options, persisted across sessions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SystemLayers {
+    pub orbits: bool,
+    pub labels: bool,
+    pub moon: bool,
+    pub inset: bool,
+}
+
+impl Default for SystemLayers {
+    fn default() -> Self {
+        Self {
+            orbits: true,
+            labels: true,
+            moon: true,
+            inset: false,
+        }
+    }
+}
 
 /// Planets shown in the heliocentric view (Sun is the origin, Moon omitted).
 const PLANETS: [Body; 8] = [
@@ -83,6 +110,7 @@ pub struct SystemView<'a> {
     camera: &'a mut OrbitCamera,
     orbits: &'a mut OrbitCache,
     selection: &'a mut Option<Selection>,
+    layers: &'a mut SystemLayers,
 }
 
 impl<'a> SystemView<'a> {
@@ -91,12 +119,14 @@ impl<'a> SystemView<'a> {
         camera: &'a mut OrbitCamera,
         orbits: &'a mut OrbitCache,
         selection: &'a mut Option<Selection>,
+        layers: &'a mut SystemLayers,
     ) -> Self {
         Self {
             sim,
             camera,
             orbits,
             selection,
+            layers,
         }
     }
 }
@@ -107,6 +137,10 @@ impl Widget for SystemView<'_> {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_rgb(3, 4, 9));
         self.camera.handle(&response, ui);
+
+        // Pan/frame the camera onto a freshly selected body (top-down), so we
+        // can zoom into a planet and its moons.
+        self.frame_on_select(ui);
 
         let aspect = rect.width() / rect.height().max(1.0);
         let view_proj = self.camera.view_proj(aspect);
@@ -121,6 +155,13 @@ impl Widget for SystemView<'_> {
             if let Some(p) = project(view_proj, to_render(self.sim.heliocentric(body)), rect) {
                 screen.push((body, p));
             }
+        }
+        // In-scene Moon around Earth, only when zoomed in enough to resolve it.
+        let moon_scene = self.moon_scene_pos();
+        if let Some(mp) = moon_scene
+            && let Some(p) = project(view_proj, mp, rect)
+        {
+            screen.push((Body::Moon, p));
         }
 
         let nearest = hover.and_then(|h| {
@@ -143,14 +184,16 @@ impl Widget for SystemView<'_> {
             }
         }
 
-        for (body, points) in self.orbits.paths(self.sim) {
-            let selected = *self.selection == Some(Selection::Body(*body));
-            let color = if selected {
-                Color32::from_rgb(90, 130, 200)
-            } else {
-                Color32::from_rgb(38, 48, 70)
-            };
-            draw_path(&painter, view_proj, rect, points, color);
+        if self.layers.orbits {
+            for (body, points) in self.orbits.paths(self.sim) {
+                let selected = *self.selection == Some(Selection::Body(*body));
+                let color = if selected {
+                    Color32::from_rgb(90, 130, 200)
+                } else {
+                    Color32::from_rgb(38, 48, 70)
+                };
+                draw_path(&painter, view_proj, rect, points, color);
+            }
         }
 
         let pulse = if self.selection.is_some() {
@@ -161,6 +204,8 @@ impl Widget for SystemView<'_> {
             0.0
         };
 
+        let labels = self.layers.labels;
+
         // Sun.
         if let Some(p) = project(view_proj, Vec3::ZERO, rect) {
             let sun = Color32::from_rgb(255, 228, 130);
@@ -170,9 +215,12 @@ impl Widget for SystemView<'_> {
                 8.0,
                 sun,
                 "Sun",
-                *self.selection == Some(Selection::Body(Body::Sun)),
-                nearest == Some(Body::Sun),
-                pulse,
+                Marks {
+                    selected: *self.selection == Some(Selection::Body(Body::Sun)),
+                    hovered: nearest == Some(Body::Sun),
+                    labels,
+                    pulse,
+                },
             );
         }
 
@@ -186,14 +234,24 @@ impl Widget for SystemView<'_> {
                     radius,
                     color,
                     body.name(),
-                    *self.selection == Some(Selection::Body(body)),
-                    nearest == Some(body),
-                    pulse,
+                    Marks {
+                        selected: *self.selection == Some(Selection::Body(body)),
+                        hovered: nearest == Some(body),
+                        labels,
+                        pulse,
+                    },
                 );
             }
         }
 
-        self.draw_moon_inset(ui, rect);
+        if let Some(mp) = moon_scene {
+            self.draw_moon_scene(&painter, view_proj, rect, mp, nearest, pulse);
+        }
+
+        if self.layers.inset {
+            self.draw_moon_inset(ui, rect);
+        }
+        self.options(ui, rect);
         response
     }
 }
@@ -314,6 +372,104 @@ impl SystemView<'_> {
             Color32::from_rgb(140, 155, 180),
         );
     }
+
+    /// When the selection changes to a body, smoothly frame it top-down.
+    fn frame_on_select(&mut self, ui: &egui::Ui) {
+        let id = Id::new("system_last_sel");
+        let last: Option<Selection> = ui.data(|d| d.get_temp(id)).flatten();
+        if last != *self.selection {
+            if let Some(Selection::Body(body)) = *self.selection {
+                self.camera.frame(self.body_render(body), 6.0);
+            }
+            ui.data_mut(|d| d.insert_temp(id, *self.selection));
+        }
+    }
+
+    /// Render-space point a body sits at (the Moon rides its in-scene ring).
+    fn body_render(&self, body: Body) -> Vec3 {
+        match body {
+            Body::Sun => Vec3::ZERO,
+            Body::Moon => self
+                .moon_scene_pos()
+                .unwrap_or_else(|| earth_render(self.sim)),
+            other => to_render(self.sim.heliocentric(other)),
+        }
+    }
+
+    /// Render-space Moon position on its faked ring around Earth, or `None` when
+    /// the camera is too far out to bother drawing it.
+    fn moon_scene_pos(&self) -> Option<Vec3> {
+        if !self.layers.moon || self.camera.distance > MOON_ZOOM_DIST {
+            return None;
+        }
+        let earth = earth_render(self.sim);
+        let g = self.sim.geocentric(Body::Moon);
+        let ang = (g.y as f32).atan2(g.x as f32);
+        Some(earth + Vec3::new(ang.cos(), ang.sin(), 0.0) * MOON_ORBIT_R)
+    }
+
+    fn draw_moon_scene(
+        &self,
+        painter: &egui::Painter,
+        view_proj: Mat4,
+        rect: Rect,
+        moon_pos: Vec3,
+        nearest: Option<Body>,
+        pulse: f32,
+    ) {
+        let earth = earth_render(self.sim);
+        let ring: Vec<Vec3> = (0..=64)
+            .map(|i| {
+                let a = i as f32 / 64.0 * std::f32::consts::TAU;
+                earth + Vec3::new(a.cos(), a.sin(), 0.0) * MOON_ORBIT_R
+            })
+            .collect();
+        draw_path(
+            painter,
+            view_proj,
+            rect,
+            &ring,
+            Color32::from_rgb(40, 50, 72),
+        );
+
+        if let Some(p) = project(view_proj, moon_pos, rect) {
+            let (frac, _) = self.sim.moon_illumination();
+            let shade = ((0.2 + 0.7 * frac as f32).clamp(0.0, 1.0) * 235.0) as u8;
+            draw_body(
+                painter,
+                p,
+                3.2,
+                Color32::from_rgb(shade, shade, shade.saturating_add(8)),
+                "Moon",
+                Marks {
+                    selected: *self.selection == Some(Selection::Body(Body::Moon)),
+                    hovered: nearest == Some(Body::Moon),
+                    labels: self.layers.labels,
+                    pulse,
+                },
+            );
+        }
+    }
+
+    fn options(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        egui::Area::new(ui.id().with("system_options"))
+            .fixed_pos(rect.right_top() + vec2(-126.0, 8.0))
+            .show(ui.ctx(), |ui| {
+                Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(110.0);
+                    ui.strong("Options");
+                    ui.checkbox(&mut self.layers.orbits, "Orbits");
+                    ui.checkbox(&mut self.layers.labels, "Labels");
+                    ui.checkbox(&mut self.layers.moon, "Moon (zoom in)");
+                    ui.checkbox(&mut self.layers.inset, "Earth-Moon inset");
+                });
+            });
+    }
+}
+
+/// Earth's render-space position.
+fn earth_render(sim: &Simulation) -> Vec3 {
+    to_render(sim.heliocentric(Body::Earth))
 }
 
 fn inset_rect(view: Rect) -> Rect {
@@ -359,35 +515,37 @@ fn scale(au: f64) -> f32 {
     (au as f32 + 1.0).ln() * 3.0
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Highlight state for a drawn body.
+struct Marks {
+    selected: bool,
+    hovered: bool,
+    labels: bool,
+    pulse: f32,
+}
+
 fn draw_body(
     painter: &egui::Painter,
     pos: Pos2,
     radius: f32,
     color: Color32,
     name: &str,
-    selected: bool,
-    hovered: bool,
-    pulse: f32,
+    m: Marks,
 ) {
-    if selected {
-        let halo = radius + 5.0 + pulse * 5.0;
+    if m.selected {
+        let halo = radius + 5.0 + m.pulse * 5.0;
         painter.circle_stroke(
             pos,
             halo,
             Stroke::new(1.5, Color32::from_rgb(120, 170, 255)),
         );
     }
-    let r = if hovered { radius + 1.5 } else { radius };
+    let r = if m.hovered { radius + 1.5 } else { radius };
     painter.circle_filled(pos, r, color);
-    let label_color = if selected || hovered {
-        Color32::WHITE
-    } else {
-        color
-    };
-    if selected || hovered {
+    let emphasised = m.selected || m.hovered;
+    let label_color = if emphasised { Color32::WHITE } else { color };
+    if emphasised {
         label_at(painter, pos + vec2(r + 4.0, -7.0), name, label_color);
-    } else {
+    } else if m.labels {
         painter.text(
             pos + vec2(r + 4.0, -7.0),
             egui::Align2::LEFT_TOP,

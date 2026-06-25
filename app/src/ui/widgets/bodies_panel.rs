@@ -1,11 +1,21 @@
 use crate::ui::Selection;
-use egui::{Align, Layout, Response, Widget};
+use crate::ui::icons;
+use egui::{Align, Color32, Id, Layout, Response, RichText, Widget};
 use egui_extras::{Column, TableBuilder};
 use skynav::math::{DVec3, equatorial_radec};
 use skynav::{Body, Simulation};
 
-/// Full-width table of every body's distances and sky position. Click a row to
-/// select it; the selection is shared with the Info, Sky and System views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Name,
+    Helio,
+    Geo,
+    Altitude,
+}
+
+/// Full-width, sortable table of every body's distances and sky position. Click
+/// a row to select it; click a header to sort. The selection is shared with the
+/// Info, Sky and System views.
 pub struct BodiesPanel<'a> {
     sim: &'a Simulation,
     selection: &'a mut Option<Selection>,
@@ -17,60 +27,128 @@ impl<'a> BodiesPanel<'a> {
     }
 }
 
+struct Row {
+    body: Body,
+    helio: f64,
+    geo: f64,
+    ra_h: f64,
+    dec: f64,
+    az: Option<f64>,
+    alt: Option<f64>,
+}
+
 impl Widget for BodiesPanel<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
+        let sort_id = Id::new("bodies_sort");
+        let (mut key, mut asc) = ui
+            .data(|d| d.get_temp::<(SortKey, bool)>(sort_id))
+            .unwrap_or((SortKey::Altitude, false));
+
+        let mut rows: Vec<Row> = Body::ALL
+            .iter()
+            .filter(|b| **b != Body::Earth)
+            .map(|&body| {
+                let (ra_h, dec) = ra_dec(self.sim.geocentric_equatorial(body));
+                let observed = self.sim.observed_body(body);
+                Row {
+                    body,
+                    helio: self.sim.heliocentric(body).length(),
+                    geo: self.sim.geocentric(body).length(),
+                    ra_h,
+                    dec,
+                    az: observed.map(|h| h.azimuth_deg()),
+                    alt: observed.map(|h| h.altitude_deg()),
+                }
+            })
+            .collect();
+        sort_rows(&mut rows, key, asc);
+
+        let mut header_clicked: Option<SortKey> = None;
         ui.scope(|ui| {
             TableBuilder::new(ui)
                 .striped(true)
                 .sense(egui::Sense::click())
                 .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::auto().at_least(64.0))
-                .columns(Column::remainder().at_least(70.0), 4)
+                .column(Column::auto().at_least(76.0))
+                .column(Column::remainder().at_least(58.0))
+                .column(Column::remainder().at_least(58.0))
+                .column(Column::remainder().at_least(78.0))
+                .column(Column::remainder().at_least(58.0))
+                .column(Column::remainder().at_least(58.0))
                 .header(22.0, |mut header| {
-                    head(
+                    sort_head(
                         &mut header,
                         "Body",
-                        "Celestial body - click a row to inspect it.",
+                        SortKey::Name,
+                        key,
+                        asc,
+                        &mut header_clicked,
                     );
-                    head(&mut header, "Helio", "Distance from the Sun, in AU.");
-                    head(&mut header, "Geo", "Distance from Earth, in AU.");
-                    head(
+                    sort_head(
                         &mut header,
-                        "RA / Dec",
-                        "Geocentric equatorial coordinates (J2000).",
+                        "Helio",
+                        SortKey::Helio,
+                        key,
+                        asc,
+                        &mut header_clicked,
                     );
-                    head(
+                    sort_head(
                         &mut header,
-                        "Az / Alt",
-                        "Observed azimuth and altitude (↓ = below horizon).",
+                        "Geo",
+                        SortKey::Geo,
+                        key,
+                        asc,
+                        &mut header_clicked,
+                    );
+                    plain_head(&mut header, "RA / Dec", "Geocentric equatorial (J2000).");
+                    plain_head(&mut header, "Az", "Azimuth from North, eastward.");
+                    sort_head(
+                        &mut header,
+                        "Alt",
+                        SortKey::Altitude,
+                        key,
+                        asc,
+                        &mut header_clicked,
                     );
                 })
                 .body(|mut body| {
-                    for object in Body::ALL {
-                        let selected = *self.selection == Some(Selection::Body(object));
+                    for r in &rows {
+                        let selected = *self.selection == Some(Selection::Body(r.body));
                         body.row(20.0, |mut row| {
                             row.set_selected(selected);
                             row.col(|ui| {
-                                ui.label(object.name());
+                                ui.label(RichText::new(body_icon(r.body)).color(body_tint(r.body)));
+                                ui.label(r.body.name());
                             });
                             row.col(|ui| {
-                                ui.label(format!("{:.4}", self.sim.heliocentric(object).length()));
+                                ui.label(format!("{:.4}", r.helio));
                             });
                             row.col(|ui| {
-                                ui.label(format!("{:.4}", self.sim.geocentric(object).length()));
+                                ui.label(format!("{:.4}", r.geo));
                             });
                             row.col(|ui| {
-                                let (ra_h, dec) = ra_dec(self.sim.geocentric_equatorial(object));
-                                ui.label(format!("{ra_h:.2}h {dec:+.1}°"));
+                                ui.label(format!("{:.2}h {:+.1}°", r.ra_h, r.dec));
                             });
-                            row.col(|ui| match self.sim.observed_body(object) {
-                                Some(h) => {
-                                    let below = if h.altitude < 0.0 { " ↓" } else { "" };
-                                    ui.label(format!(
-                                        "{:.0}° {:+.1}°{below}",
-                                        h.azimuth_deg(),
-                                        h.altitude_deg()
-                                    ));
+                            row.col(|ui| match r.az {
+                                Some(az) => {
+                                    ui.label(format!("{az:.0}°"));
+                                }
+                                None => {
+                                    ui.label("-");
+                                }
+                            });
+                            row.col(|ui| match r.alt {
+                                Some(alt) if alt >= 0.0 => {
+                                    ui.colored_label(
+                                        Color32::from_rgb(150, 220, 160),
+                                        format!("{} {alt:+.1}°", icons::EYE),
+                                    );
+                                }
+                                Some(alt) => {
+                                    ui.colored_label(
+                                        Color32::from_rgb(130, 138, 152),
+                                        format!("{alt:+.1}°"),
+                                    );
                                 }
                                 None => {
                                     ui.label("-");
@@ -80,21 +158,92 @@ impl Widget for BodiesPanel<'_> {
                                 *self.selection = if selected {
                                     None
                                 } else {
-                                    Some(Selection::Body(object))
+                                    Some(Selection::Body(r.body))
                                 };
                             }
                         });
                     }
                 });
-        })
-        .response
+        });
+
+        if let Some(clicked) = header_clicked {
+            if clicked == key {
+                asc = !asc;
+            } else {
+                key = clicked;
+                asc = matches!(clicked, SortKey::Name);
+            }
+            ui.data_mut(|d| d.insert_temp(sort_id, (key, asc)));
+        }
+
+        ui.interact(ui.min_rect(), ui.id().with("bodies"), egui::Sense::hover())
     }
 }
 
-fn head(header: &mut egui_extras::TableRow, label: &str, tip: &str) {
+fn sort_rows(rows: &mut [Row], key: SortKey, asc: bool) {
+    rows.sort_by(|a, b| {
+        let ord = match key {
+            SortKey::Name => a.body.name().cmp(b.body.name()),
+            SortKey::Helio => a.helio.total_cmp(&b.helio),
+            SortKey::Geo => a.geo.total_cmp(&b.geo),
+            SortKey::Altitude => a
+                .alt
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&b.alt.unwrap_or(f64::NEG_INFINITY)),
+        };
+        if asc { ord } else { ord.reverse() }
+    });
+}
+
+fn sort_head(
+    header: &mut egui_extras::TableRow,
+    label: &str,
+    this: SortKey,
+    active: SortKey,
+    asc: bool,
+    clicked: &mut Option<SortKey>,
+) {
+    header.col(|ui| {
+        let arrow = if this == active {
+            if asc {
+                icons::CARET_UP
+            } else {
+                icons::CARET_DOWN
+            }
+        } else {
+            ""
+        };
+        if ui
+            .add(egui::Button::new(RichText::new(format!("{label} {arrow}")).strong()).frame(false))
+            .on_hover_text("Click to sort by this column.")
+            .clicked()
+        {
+            *clicked = Some(this);
+        }
+    });
+}
+
+fn plain_head(header: &mut egui_extras::TableRow, label: &str, tip: &str) {
     header.col(|ui| {
         ui.strong(label).on_hover_text(tip);
     });
+}
+
+fn body_icon(body: Body) -> &'static str {
+    match body {
+        Body::Sun => icons::SUN,
+        Body::Moon => icons::MOON,
+        _ => icons::PLANET,
+    }
+}
+
+fn body_tint(body: Body) -> Color32 {
+    match body {
+        Body::Sun => Color32::from_rgb(255, 214, 130),
+        Body::Moon => Color32::from_rgb(210, 214, 226),
+        Body::Mars => Color32::from_rgb(240, 140, 100),
+        _ => Color32::from_rgb(170, 200, 255),
+    }
 }
 
 fn ra_dec(v: DVec3) -> (f64, f64) {

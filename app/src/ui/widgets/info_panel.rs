@@ -1,4 +1,5 @@
 use crate::ui::Selection;
+use crate::util::humanize_until;
 use egui::{Color32, Grid, Response, RichText, Widget};
 use skynav::math::AU_KM;
 use skynav::{Body, Epoch, Simulation, Star};
@@ -129,26 +130,35 @@ impl InfoPanel<'_> {
         });
 
         let rs = crate::ui::cache::body_rise_set(ui, self.sim, body);
+        self.rise_set_grid(ui, "info_riseset_body", rs);
+    }
+
+    fn rise_set_grid(&self, ui: &mut egui::Ui, id: &str, rs: skynav::RiseSet) {
+        let now = self.sim.clock.epoch;
         ui.add_space(6.0);
         ui.label(RichText::new("Today (UTC)").strong())
             .on_hover_text("Rise, set and culmination over the current UTC day.");
-        Grid::new("info_riseset").num_columns(2).show(ui, |ui| {
+        Grid::new(id).num_columns(2).show(ui, |ui| {
             row(
                 ui,
                 "Rise",
-                &format_time(rs.rise),
+                &format_when(rs.rise, now),
                 "When it climbs above the horizon.",
             );
             row(
                 ui,
                 "Transit",
-                &format!("{} ({:+.1}°)", format_time(rs.transit), rs.transit_altitude),
+                &format!(
+                    "{} ({:+.1}°)",
+                    format_when(rs.transit, now),
+                    rs.transit_altitude
+                ),
                 "Highest point (crossing the meridian) and its altitude.",
             );
             row(
                 ui,
                 "Set",
-                &format_time(rs.set),
+                &format_when(rs.set, now),
                 "When it drops below the horizon.",
             );
         });
@@ -195,6 +205,20 @@ impl InfoPanel<'_> {
             );
             self.horizon_rows(ui, self.sim.observed_star(star));
         });
+
+        let day = day_start(self.sim.clock.epoch);
+        let rs = skynav::events::star_rise_set(&self.sim.observer, star.ra, star.dec, day);
+        if rs.rise.is_none() && rs.set.is_none() {
+            ui.add_space(6.0);
+            let state = if rs.transit_altitude >= 0.0 {
+                "Always above the horizon (circumpolar)."
+            } else {
+                "Never rises at this latitude."
+            };
+            ui.weak(state);
+        } else {
+            self.rise_set_grid(ui, "info_riseset_star", rs);
+        }
     }
 
     fn horizon_rows(&self, ui: &mut egui::Ui, observed: Option<skynav::Horizontal>) {
@@ -247,14 +271,19 @@ fn format_angle(rad: f64) -> String {
     }
 }
 
-fn format_time(time: Option<Epoch>) -> String {
+fn format_when(time: Option<Epoch>, now: Epoch) -> String {
     match time {
         Some(e) => {
             let (_, _, _, h, mi, _, _) = e.to_gregorian_utc();
-            format!("{h:02}:{mi:02}")
+            format!("{h:02}:{mi:02} ({})", humanize_until(e, now))
         }
         None => "-".to_string(),
     }
+}
+
+fn day_start(epoch: Epoch) -> Epoch {
+    let (y, m, d, _, _, _, _) = epoch.to_gregorian_utc();
+    Epoch::from_gregorian_utc(y, m, d, 0, 0, 0, 0)
 }
 
 fn moon_phase_name(fraction: f64, waxing: bool) -> &'static str {

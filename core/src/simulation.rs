@@ -5,6 +5,7 @@ use crate::math::{DMat3, DVec3, ecliptic_to_equatorial, equatorial_radec};
 use crate::observer::Observer;
 use crate::sky::{self, Horizontal};
 use crate::time::{Epoch, SimClock};
+use crate::view::ViewWindow;
 use hifitime::Duration;
 use std::f64::consts::{PI, TAU};
 
@@ -13,6 +14,7 @@ use std::f64::consts::{PI, TAU};
 pub struct Simulation {
     pub clock: SimClock,
     pub observer: Observer,
+    pub view: ViewWindow,
     ephemeris: Box<dyn Ephemeris>,
 }
 
@@ -21,6 +23,7 @@ impl Simulation {
         Self {
             clock: SimClock::new(epoch),
             observer: Observer::default(),
+            view: ViewWindow::default(),
             ephemeris: Box::new(AnalyticEphemeris),
         }
     }
@@ -72,9 +75,25 @@ impl Simulation {
 
     /// Geocentric equatorial J2000 position (AU) of a body at an arbitrary epoch.
     pub fn geocentric_equatorial_at(&self, body: Body, epoch: Epoch) -> DVec3 {
-        let helio = self.ephemeris.position(body, epoch);
-        let earth = self.ephemeris.position(Body::Earth, epoch);
-        ecliptic_to_equatorial(helio - earth)
+        ecliptic_to_equatorial(self.geocentric_at(body, epoch))
+    }
+
+    /// Geocentric ecliptic J2000 position (AU) of a body at an arbitrary epoch.
+    pub fn geocentric_at(&self, body: Body, epoch: Epoch) -> DVec3 {
+        self.ephemeris.position(body, epoch) - self.ephemeris.position(Body::Earth, epoch)
+    }
+
+    /// Angular separation (radians) between two bodies as seen from Earth at an
+    /// arbitrary epoch.
+    pub fn separation_at(&self, a: Body, b: Body, epoch: Epoch) -> f64 {
+        let u = self.geocentric_equatorial_at(a, epoch).normalize_or_zero();
+        let v = self.geocentric_equatorial_at(b, epoch).normalize_or_zero();
+        u.dot(v).clamp(-1.0, 1.0).acos()
+    }
+
+    /// Angular distance (radians) of a body from the Sun as seen from Earth.
+    pub fn elongation_at(&self, body: Body, epoch: Epoch) -> f64 {
+        self.separation_at(body, Body::Sun, epoch)
     }
 
     /// Moon illumination: fraction of the disc lit (0..1) and whether it is
@@ -145,5 +164,19 @@ impl Simulation {
         (dec.sin() * lat.sin() + dec.cos() * lat.cos() * hour_angle.cos())
             .clamp(-1.0, 1.0)
             .asin()
+    }
+
+    /// Geometric azimuth and altitude in degrees (no refraction) of a body at an
+    /// arbitrary epoch. Azimuth is measured from North, increasing eastward.
+    /// Used to test events against the mapped viewing area.
+    pub fn horizontal_at(&self, body: Body, epoch: Epoch) -> (f64, f64) {
+        let (ra, dec) = equatorial_radec(self.geocentric_equatorial_at(body, epoch));
+        let lst = crate::earth::earth_rotation_angle(epoch) + self.observer.longitude_rad();
+        let (sh, ch) = (lst - ra).sin_cos();
+        let (sd, cd) = dec.sin_cos();
+        let (sphi, cphi) = self.observer.latitude_rad().sin_cos();
+        let alt = (sphi * sd + cphi * cd * ch).clamp(-1.0, 1.0).asin();
+        let az = (-cd * sh).atan2(sd * cphi - cd * sphi * ch).rem_euclid(TAU);
+        (az.to_degrees(), alt.to_degrees())
     }
 }
