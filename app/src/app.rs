@@ -1,11 +1,11 @@
 use crate::VERSION;
 use crate::gfx::{GlobeRenderer, LookAroundCamera, OrbitCamera, SkyRenderer};
-use crate::ui::Selection;
 use crate::ui::icons;
 use crate::ui::tabs::{SkyTabViewer, Tab, default_dock};
 use crate::ui::widgets::{
     EventsFilter, GlobeLayers, OrbitCache, Scrubber, SkyLayers, SystemLayers,
 };
+use crate::ui::{Observed, Selection};
 use eframe::CreationContext;
 use egui::{CentralPanel, Panel, PopupCloseBehavior, TextEdit};
 use egui_dock::{DockArea, DockState, Style};
@@ -31,6 +31,7 @@ pub struct SkyNav {
     events_filter: EventsFilter,
     selection: Option<Selection>,
     last_selection: Option<Selection>,
+    observed: Observed,
     follow: bool,
     search: String,
 }
@@ -43,6 +44,7 @@ struct PersistState {
     rate: f64,
     playing: bool,
     selection: Option<Selection>,
+    observed: Observed,
     follow: bool,
     sky_layers: SkyLayers,
     globe_layers: GlobeLayers,
@@ -79,6 +81,7 @@ impl SkyNav {
             events_filter: EventsFilter::default(),
             selection: None,
             last_selection: None,
+            observed: Observed::default(),
             follow: false,
             search: String::new(),
         };
@@ -98,6 +101,7 @@ impl SkyNav {
         self.sim.clock.playing = state.playing;
         self.selection = state.selection;
         self.last_selection = state.selection;
+        self.observed = state.observed;
         self.follow = state.follow;
         self.sky_layers = state.sky_layers;
         self.globe_layers = state.globe_layers;
@@ -234,6 +238,7 @@ impl eframe::App for SkyNav {
                 globe_layers: &mut self.globe_layers,
                 events_filter: &mut self.events_filter,
                 selection: &mut self.selection,
+                observed: &mut self.observed,
                 follow: &mut self.follow,
                 to_open: &mut to_open,
             };
@@ -265,6 +270,7 @@ impl eframe::App for SkyNav {
             rate: self.sim.clock.rate,
             playing: self.sim.clock.playing,
             selection: self.selection,
+            observed: self.observed.clone(),
             follow: self.follow,
             sky_layers: self.sky_layers,
             globe_layers: self.globe_layers,

@@ -1,19 +1,5 @@
-use egui::{ComboBox, DragValue, Grid, Response, RichText, Widget};
-use skynav::Simulation;
-
-/// (name, latitude, longitude) presets for quick observer placement.
-const CITIES: &[(&str, f64, f64)] = &[
-    ("London", 51.5074, -0.1278),
-    ("New York", 40.7128, -74.0060),
-    ("Sao Paulo", -23.5505, -46.6333),
-    ("Cairo", 30.0444, 31.2357),
-    ("Nairobi", -1.2921, 36.8219),
-    ("Tokyo", 35.6762, 139.6503),
-    ("Singapore", 1.3521, 103.8198),
-    ("Sydney", -33.8688, 151.2093),
-    ("Honolulu", 21.3069, -157.8583),
-    ("Reykjavik", 64.1466, -21.9426),
-];
+use egui::{ComboBox, DragValue, Grid, Id, Response, RichText, ScrollArea, TextEdit, Widget};
+use skynav::{Capital, Simulation, places};
 
 /// Editor for the observer's geodetic location.
 pub struct ObserverPanel<'a> {
@@ -59,20 +45,46 @@ impl Widget for ObserverPanel<'_> {
                 ui.end_row();
             });
             ui.add_space(6.0);
-            ComboBox::from_label("Jump to city")
-                .selected_text("Pick a city")
-                .show_ui(ui, |ui| {
-                    for (name, lat, lon) in CITIES {
-                        if ui.selectable_label(false, *name).clicked() {
-                            obs.latitude_deg = *lat;
-                            obs.longitude_deg = *lon;
-                            obs.height_m = 0.0;
-                        }
-                    }
-                });
+            capital_picker(ui, obs);
             ui.add_space(4.0);
             ui.weak("Tip: click the globe to set this location.");
         })
         .response
     }
+}
+
+/// Searchable dropdown of every world capital; picking one moves the observer.
+fn capital_picker(ui: &mut egui::Ui, obs: &mut skynav::Observer) {
+    let filter_id = Id::new("observer_capital_filter");
+    let mut filter: String = ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
+
+    ComboBox::from_label("Jump to a capital")
+        .selected_text("Pick a capital")
+        .show_ui(ui, |ui| {
+            ui.add(TextEdit::singleline(&mut filter).hint_text("Search city or country"));
+            ui.add_space(2.0);
+            let q = filter.trim().to_lowercase();
+            let mut caps: Vec<&Capital> = places::capitals().iter().collect();
+            caps.sort_by_key(|c| c.name);
+            ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for cap in caps {
+                    if !q.is_empty()
+                        && !cap.name.to_lowercase().contains(&q)
+                        && !cap.country.to_lowercase().contains(&q)
+                    {
+                        continue;
+                    }
+                    if ui
+                        .selectable_label(false, format!("{}, {}", cap.name, cap.country))
+                        .clicked()
+                    {
+                        obs.latitude_deg = cap.lat;
+                        obs.longitude_deg = cap.lon;
+                        obs.height_m = 0.0;
+                    }
+                }
+            });
+        });
+
+    ui.data_mut(|d| d.insert_temp(filter_id, filter));
 }

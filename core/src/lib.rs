@@ -17,7 +17,7 @@ pub use body::Body;
 pub use catalog::Star;
 pub use constellations::Constellation;
 pub use ephemeris::{AnalyticEphemeris, Ephemeris};
-pub use events::{AstroEvent, DayEvents, EventCategory, RiseSet};
+pub use events::{AstroEvent, DayEvents, EventCategory, EventKind, RiseSet};
 pub use observer::Observer;
 pub use places::Capital;
 pub use simulation::Simulation;

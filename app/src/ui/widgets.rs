@@ -1,4 +1,5 @@
 pub mod bodies_panel;
+pub mod checklist_panel;
 pub mod events_panel;
 pub mod globe_view;
 pub mod info_panel;
@@ -11,6 +12,7 @@ pub mod view_panel;
 pub mod visible_panel;
 
 pub use bodies_panel::BodiesPanel;
+pub use checklist_panel::ChecklistPanel;
 pub use events_panel::{EventsFilter, EventsPanel};
 pub use globe_view::{GlobeLayers, GlobeView};
 pub use info_panel::InfoPanel;

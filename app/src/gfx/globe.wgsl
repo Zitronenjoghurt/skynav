@@ -35,10 +35,13 @@ fn fs(in: VSOut) -> @location(0) vec4<f32> {
     let ndl = max(dot(n, l), 0.0);
 
     let albedo = textureSample(earth_tex, earth_samp, in.uv).rgb;
-    // Real day/night: lit hemisphere sees the Sun, dark side stays near-black
-    // with a faint ambient. A soft band across the terminator avoids a hard edge.
-    let day = smoothstep(-0.08, 0.12, dot(n, l));
-    let shade = 0.03 + 1.05 * ndl * day;
+    // Real day/night driven purely by the Sun's geometric incidence: the
+    // terminator sits exactly where the Sun is on the local horizon (ndl = 0),
+    // so the lit cap and its seasonal tilt match the sunrise/sunset calculation.
+    // Ambient is kept tiny because the manual sRGB encode below lifts darks a
+    // lot - a larger ambient made the night side (and polar night) read as lit.
+    let ambient = 0.004;
+    let shade = ambient + 1.08 * ndl;
     var color = albedo * shade;
     // Encode to sRGB ourselves when the egui target is not an sRGB format.
     if (u.base_color.a > 0.5) {

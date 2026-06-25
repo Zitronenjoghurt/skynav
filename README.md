@@ -21,12 +21,19 @@ cargo run -p skynav-parse
 - Stars: [HYG database](https://github.com/astronexus/HYG-Database) (CC BY-SA), limited to magnitude 6.5.
 - Constellation lines: [d3-celestial](https://github.com/ofrohn/d3-celestial) (BSD).
 
-The Earth texture lives only at `app/assets/earth.jpg` (embedded via
-`include_bytes!`): NASA Blue Marble (public domain), an 8192x4096 equirectangular
-downscale of the 21600x10800 topo/bathy source (8192 is the wgpu default max
-texture dimension):
+The Earth texture is NASA Blue Marble (public domain), embedded via
+`include_bytes!`, with two equirectangular downscales of the 21600x10800
+topo/bathy source:
+
+- `app/assets/earth_16k.jpg` (16384x8192) - used on native. The app requests the
+  GPU's full `max_texture_dimension_2d` (capped at 16384) and builds a mip chain
+  with anisotropic filtering; GPUs that cap lower (and WebGPU's usual 8192) get
+  the texture downscaled to fit at load time.
+- `app/assets/earth.jpg` (8192x4096) - used on the web build, to keep the WASM
+  payload reasonable.
 
 ```sh
 curl -L -o /tmp/earth_src.jpg https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/world.topo.bathy.200412.3x21600x10800.jpg
+magick /tmp/earth_src.jpg -resize 16384x8192! -quality 82 app/assets/earth_16k.jpg
 sips -s format jpeg -s formatOptions 52 -z 4096 8192 /tmp/earth_src.jpg --out app/assets/earth.jpg
 ```

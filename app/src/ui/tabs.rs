@@ -1,10 +1,10 @@
 use crate::gfx::{LookAroundCamera, OrbitCamera};
-use crate::ui::Selection;
-use crate::ui::icons;
 use crate::ui::widgets::{
-    BodiesPanel, EventsFilter, EventsPanel, GlobeLayers, GlobeView, InfoPanel, ObserverPanel,
-    OrbitCache, SkyLayers, SkyView, SystemLayers, SystemView, TimePanel, ViewPanel, VisiblePanel,
+    BodiesPanel, ChecklistPanel, EventsFilter, EventsPanel, GlobeLayers, GlobeView, InfoPanel,
+    ObserverPanel, OrbitCache, SkyLayers, SkyView, SystemLayers, SystemView, TimePanel, ViewPanel,
+    VisiblePanel,
 };
+use crate::ui::{Observed, Selection, icons};
 use egui_dock::{DockState, NodeIndex, NodePath, TabViewer};
 use skynav::{Constellation, Simulation, Star};
 
@@ -15,6 +15,7 @@ pub enum Tab {
     Sky,
     Info,
     Visible,
+    Checklist,
     Time,
     Observer,
     Bodies,
@@ -23,12 +24,13 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Globe,
         Tab::System,
         Tab::Sky,
         Tab::Info,
         Tab::Visible,
+        Tab::Checklist,
         Tab::Time,
         Tab::Observer,
         Tab::Bodies,
@@ -43,6 +45,7 @@ impl Tab {
             Tab::Sky => (icons::STAR, "Sky"),
             Tab::Info => (icons::INFO, "Info"),
             Tab::Visible => (icons::EYE, "Visible"),
+            Tab::Checklist => (icons::LIST_CHECKS, "Checklist"),
             Tab::Time => (icons::CLOCK, "Time"),
             Tab::Observer => (icons::MAP_PIN, "Observer"),
             Tab::Bodies => (icons::PLANET, "Bodies"),
@@ -62,6 +65,7 @@ pub fn default_dock() -> DockState<Tab> {
         vec![
             Tab::Info,
             Tab::Visible,
+            Tab::Checklist,
             Tab::Time,
             Tab::Observer,
             Tab::Bodies,
@@ -86,6 +90,8 @@ pub struct SkyTabViewer<'a> {
     pub events_filter: &'a mut EventsFilter,
     /// Object selected across the Sky / System / Bodies views (shared highlight).
     pub selection: &'a mut Option<Selection>,
+    /// Objects the user has marked as observed (shared with the checklist).
+    pub observed: &'a mut Observed,
     /// Sky follow-cam: keep the selection centred as time advances.
     pub follow: &'a mut bool,
     /// Tabs requested via the dock "+" button, opened by the app after the frame.
@@ -131,10 +137,28 @@ impl TabViewer for SkyTabViewer<'_> {
                 ));
             }
             Tab::Info => {
-                ui.add(InfoPanel::new(self.sim, self.stars, *self.selection));
+                ui.add(InfoPanel::new(
+                    self.sim,
+                    self.stars,
+                    *self.selection,
+                    self.observed,
+                ));
             }
             Tab::Visible => {
-                ui.add(VisiblePanel::new(self.sim, self.stars, self.selection));
+                ui.add(VisiblePanel::new(
+                    self.sim,
+                    self.stars,
+                    self.selection,
+                    self.observed,
+                ));
+            }
+            Tab::Checklist => {
+                ui.add(ChecklistPanel::new(
+                    self.stars,
+                    self.constellations,
+                    self.observed,
+                    self.selection,
+                ));
             }
             Tab::Time => {
                 ui.add(TimePanel::new(self.sim));
@@ -143,7 +167,7 @@ impl TabViewer for SkyTabViewer<'_> {
                 ui.add(ObserverPanel::new(self.sim));
             }
             Tab::Bodies => {
-                ui.add(BodiesPanel::new(self.sim, self.selection));
+                ui.add(BodiesPanel::new(self.sim, self.selection, self.observed));
             }
             Tab::Events => {
                 ui.add(EventsPanel::new(self.sim, self.events_filter));

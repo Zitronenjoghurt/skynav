@@ -11,10 +11,17 @@ use serde::{Deserialize, Serialize};
 use skynav::math::AU_KM;
 use skynav::{Body, Simulation};
 
-/// Render-space radius of the faked Moon orbit drawn around Earth in-scene.
-const MOON_ORBIT_R: f32 = 0.45;
 /// Camera distance below which the in-scene Earth-Moon system is drawn.
 const MOON_ZOOM_DIST: f32 = 16.0;
+
+/// Faked Moon-orbit radius around Earth in the heliocentric view. The true Moon
+/// distance is invisibly small at this scale, so it is exaggerated - but tied to
+/// the zoom and clamped well inside the gap to Venus's orbit, so it reads as a
+/// tight satellite instead of slicing through neighbouring orbits. The same
+/// zoom-relative scheme will extend to the other planets' moons later.
+fn moon_orbit_r(camera_distance: f32) -> f32 {
+    (camera_distance * 0.04).clamp(0.05, 0.18)
+}
 
 /// Toggleable System-view options, persisted across sessions.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -141,6 +148,14 @@ impl Widget for SystemView<'_> {
         // Pan/frame the camera onto a freshly selected body (top-down), so we
         // can zoom into a planet and its moons.
         self.frame_on_select(ui);
+
+        // Keep the focus on the selected body as it moves: advancing time or
+        // jumping to an event shifts the planet, so re-aim the orbit centre at
+        // its current position (preserving the user's orientation and zoom).
+        if let Some(Selection::Body(body)) = *self.selection {
+            let pos = self.body_render(body);
+            self.camera.track(pos);
+        }
 
         let aspect = rect.width() / rect.height().max(1.0);
         let view_proj = self.camera.view_proj(aspect);
@@ -405,7 +420,8 @@ impl SystemView<'_> {
         let earth = earth_render(self.sim);
         let g = self.sim.geocentric(Body::Moon);
         let ang = (g.y as f32).atan2(g.x as f32);
-        Some(earth + Vec3::new(ang.cos(), ang.sin(), 0.0) * MOON_ORBIT_R)
+        let r = moon_orbit_r(self.camera.distance);
+        Some(earth + Vec3::new(ang.cos(), ang.sin(), 0.0) * r)
     }
 
     fn draw_moon_scene(
@@ -418,10 +434,11 @@ impl SystemView<'_> {
         pulse: f32,
     ) {
         let earth = earth_render(self.sim);
+        let r = moon_orbit_r(self.camera.distance);
         let ring: Vec<Vec3> = (0..=64)
             .map(|i| {
                 let a = i as f32 / 64.0 * std::f32::consts::TAU;
-                earth + Vec3::new(a.cos(), a.sin(), 0.0) * MOON_ORBIT_R
+                earth + Vec3::new(a.cos(), a.sin(), 0.0) * r
             })
             .collect();
         draw_path(

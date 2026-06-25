@@ -5,9 +5,15 @@ use egui::{
     Align2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Widget, vec2,
 };
 use hifitime::Duration;
-use skynav::{Epoch, Simulation};
+use skynav::{Body, Epoch, Simulation};
 
 const DAY_SECONDS: f64 = 86_400.0;
+
+// Sun-altitude thresholds (degrees) for each shading band, matching `events`.
+const SUNRISE_ALT: f64 = -0.833;
+const CIVIL_ALT: f64 = -6.0;
+const NAUTICAL_ALT: f64 = -12.0;
+const ASTRONOMICAL_ALT: f64 = -18.0;
 
 /// Media-player-style time bar: transport controls on top, a scrubbable
 /// day/night track below. Sits in a bottom panel.
@@ -52,7 +58,12 @@ impl Widget for Scrubber<'_> {
                     .on_hover_text("Current simulated instant (UTC).");
             });
             ui.add_space(2.0);
-            track(ui, &mut self.sim.clock.epoch, &events);
+            let start = day_start(self.sim.clock.epoch);
+            let start_alt = self
+                .sim
+                .geometric_altitude_at(Body::Sun, start)
+                .to_degrees();
+            track(ui, &mut self.sim.clock.epoch, &events, start_alt);
         })
         .response
     }
@@ -83,7 +94,7 @@ fn weekday(epoch: Epoch) -> &'static str {
 
 /// Full-width day track: layered night/twilight/day shading, hour ticks,
 /// sunrise/sunset markers and a draggable handle.
-fn track(ui: &mut egui::Ui, epoch: &mut Epoch, events: &skynav::DayEvents) {
+fn track(ui: &mut egui::Ui, epoch: &mut Epoch, events: &skynav::DayEvents, start_alt_deg: f64) {
     let width = ui.available_width().max(160.0);
     let (rect, response) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -97,26 +108,33 @@ fn track(ui: &mut egui::Ui, epoch: &mut Epoch, events: &skynav::DayEvents) {
         (
             events.astronomical_dawn,
             events.astronomical_dusk,
+            ASTRONOMICAL_ALT,
             Color32::from_rgb(22, 27, 48),
         ),
         (
             events.nautical_dawn,
             events.nautical_dusk,
+            NAUTICAL_ALT,
             Color32::from_rgb(34, 44, 74),
         ),
         (
             events.civil_dawn,
             events.civil_dusk,
+            CIVIL_ALT,
             Color32::from_rgb(52, 70, 110),
         ),
         (
             events.sunrise,
             events.sunset,
+            SUNRISE_ALT,
             Color32::from_rgb(92, 134, 196),
         ),
     ];
-    for (dawn, dusk, color) in bands {
-        if let (Some(a), Some(b)) = (frac_of(dawn), frac_of(dusk)) {
+    for (dawn, dusk, threshold, color) in bands {
+        // When the rise crossing falls after the set crossing the lit span wraps
+        // across UTC midnight; a missing crossing means the Sun stays on one side
+        // of the threshold all day (polar day/night).
+        for (a, b) in lit_intervals(frac_of(dawn), frac_of(dusk), start_alt_deg >= threshold) {
             band(&painter, rect, a, b, color);
         }
     }
@@ -196,6 +214,19 @@ fn track(ui: &mut egui::Ui, epoch: &mut Epoch, events: &skynav::DayEvents) {
         *epoch = start + Duration::from_seconds(frac * DAY_SECONDS);
     }
     response.on_hover_text("Drag to scrub through the day");
+}
+
+/// Day-fraction spans the Sun spends above a threshold, given the rise/set
+/// crossings and whether it starts the UTC day already above it.
+fn lit_intervals(dawn: Option<f32>, dusk: Option<f32>, lit_at_start: bool) -> Vec<(f32, f32)> {
+    match (dawn, dusk) {
+        (Some(a), Some(b)) if a <= b => vec![(a, b)],
+        (Some(a), Some(b)) => vec![(0.0, b), (a, 1.0)],
+        (Some(a), None) => vec![(a, 1.0)],
+        (None, Some(b)) => vec![(0.0, b)],
+        (None, None) if lit_at_start => vec![(0.0, 1.0)],
+        (None, None) => Vec::new(),
+    }
 }
 
 fn band(painter: &egui::Painter, rect: egui::Rect, from: f32, to: f32, color: Color32) {

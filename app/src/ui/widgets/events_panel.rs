@@ -199,11 +199,14 @@ fn chip(ui: &mut egui::Ui, on: &mut bool, category: EventCategory) {
 fn detail_text(e: &AstroEvent) -> String {
     let (y, mo, d, h, mi, _, _) = e.time.to_gregorian_utc();
     let stamp = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02} UTC");
-    if e.detail.is_empty() {
-        stamp
-    } else {
-        format!("{}\n{stamp}", e.detail)
+    let mut text = e.kind.describe().to_string();
+    if !e.detail.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&e.detail);
     }
+    text.push_str("\n\n");
+    text.push_str(&stamp);
+    text
 }
 
 fn category_icon(category: EventCategory) -> RichText {

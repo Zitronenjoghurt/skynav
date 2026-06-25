@@ -1,5 +1,5 @@
-use crate::ui::Selection;
-use crate::ui::icons;
+use crate::ui::observed::body_key;
+use crate::ui::{Observed, Selection, icons};
 use egui::{Align, Color32, Id, Layout, Response, RichText, Widget};
 use egui_extras::{Column, TableBuilder};
 use skynav::math::{DVec3, equatorial_radec};
@@ -19,11 +19,20 @@ enum SortKey {
 pub struct BodiesPanel<'a> {
     sim: &'a Simulation,
     selection: &'a mut Option<Selection>,
+    observed: &'a Observed,
 }
 
 impl<'a> BodiesPanel<'a> {
-    pub fn new(sim: &'a Simulation, selection: &'a mut Option<Selection>) -> Self {
-        Self { sim, selection }
+    pub fn new(
+        sim: &'a Simulation,
+        selection: &'a mut Option<Selection>,
+        observed: &'a Observed,
+    ) -> Self {
+        Self {
+            sim,
+            selection,
+            observed,
+        }
     }
 }
 
@@ -119,6 +128,13 @@ impl Widget for BodiesPanel<'_> {
                             row.col(|ui| {
                                 ui.label(RichText::new(body_icon(r.body)).color(body_tint(r.body)));
                                 ui.label(r.body.name());
+                                if self.observed.contains(&body_key(r.body)) {
+                                    ui.colored_label(
+                                        Color32::from_rgb(120, 215, 150),
+                                        icons::CHECK_CIRCLE,
+                                    )
+                                    .on_hover_text("Observed");
+                                }
                             });
                             row.col(|ui| {
                                 ui.label(format!("{:.4}", r.helio));

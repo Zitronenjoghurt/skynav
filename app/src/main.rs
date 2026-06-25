@@ -1,9 +1,41 @@
+/// Ask wgpu for the adapter's full 2D texture size (capped at 16k) instead of
+/// eframe's default 8192, so the high-resolution Earth texture can be uploaded
+/// at native resolution. Devices that cap lower simply report less and the
+/// texture loader downscales to fit.
+#[cfg(not(target_arch = "wasm32"))]
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup};
+    let mut options = WgpuConfiguration::default();
+    if let WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
+        setup.device_descriptor = std::sync::Arc::new(|adapter| {
+            let base = if adapter.get_info().backend == eframe::wgpu::Backend::Gl {
+                eframe::wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                eframe::wgpu::Limits::default()
+            };
+            eframe::wgpu::DeviceDescriptor {
+                label: Some("skynav device"),
+                required_limits: eframe::wgpu::Limits {
+                    max_texture_dimension_2d: adapter
+                        .limits()
+                        .max_texture_dimension_2d
+                        .clamp(8192, 16384),
+                    ..base
+                },
+                ..Default::default()
+            }
+        });
+    }
+    options
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     env_logger::init();
 
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: wgpu_options(),
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 760.0])
             .with_min_inner_size([720.0, 420.0])

@@ -1,4 +1,4 @@
-use crate::ui::Selection;
+use crate::ui::{Observed, Selection, icons};
 use egui::{Align, Color32, Layout, Response, RichText, Widget};
 use egui_extras::{Column, TableBuilder};
 use glam::Vec3;
@@ -13,6 +13,7 @@ pub struct VisiblePanel<'a> {
     sim: &'a Simulation,
     stars: &'a [Star],
     selection: &'a mut Option<Selection>,
+    observed: &'a Observed,
 }
 
 impl<'a> VisiblePanel<'a> {
@@ -20,11 +21,13 @@ impl<'a> VisiblePanel<'a> {
         sim: &'a Simulation,
         stars: &'a [Star],
         selection: &'a mut Option<Selection>,
+        observed: &'a Observed,
     ) -> Self {
         Self {
             sim,
             stars,
             selection,
+            observed,
         }
     }
 }
@@ -85,6 +88,13 @@ impl Widget for VisiblePanel<'_> {
                         body.row(20.0, |mut row| {
                             row.set_selected(selected);
                             row.col(|ui| {
+                                if self.observed.is_observed(entry.selection, self.stars) {
+                                    ui.colored_label(
+                                        Color32::from_rgb(120, 215, 150),
+                                        icons::CHECK_CIRCLE,
+                                    )
+                                    .on_hover_text("You have observed this object.");
+                                }
                                 ui.colored_label(entry.color, &entry.label);
                             });
                             row.col(|ui| {

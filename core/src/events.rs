@@ -180,11 +180,62 @@ impl EventCategory {
     }
 }
 
+/// The specific type of a dated event, carrying a one-line plain-language
+/// explanation so the UI can teach what each term means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Sunrise,
+    Sunset,
+    Moonrise,
+    Moonset,
+    SolarEclipse,
+    LunarEclipse,
+    Conjunction,
+    Opposition,
+    GreatestElongation,
+    Perihelion,
+    Aphelion,
+    Perigee,
+    Apogee,
+}
+
+impl EventKind {
+    /// A short explanation of what this kind of event is.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            EventKind::Sunrise => "The Sun's upper edge reaches the horizon and day begins.",
+            EventKind::Sunset => "The Sun's upper edge drops below the horizon and night begins.",
+            EventKind::Moonrise => "The Moon climbs above the horizon.",
+            EventKind::Moonset => "The Moon sinks below the horizon.",
+            EventKind::SolarEclipse => {
+                "The Moon passes between Earth and the Sun, hiding it for part of the world."
+            }
+            EventKind::LunarEclipse => {
+                "Earth slips between the Sun and the Moon, casting its shadow on the Moon."
+            }
+            EventKind::Conjunction => {
+                "Two bodies appear close together in the sky, sharing nearly the same direction."
+            }
+            EventKind::Opposition => {
+                "A planet sits opposite the Sun, rising at sunset and at its brightest and closest - the best time to view it."
+            }
+            EventKind::GreatestElongation => {
+                "An inner planet (Mercury or Venus) reaches its widest apparent separation from the Sun, easiest to spot at dawn or dusk."
+            }
+            EventKind::Perihelion => "A planet reaches the closest point of its orbit to the Sun.",
+            EventKind::Aphelion => "A planet reaches the farthest point of its orbit from the Sun.",
+            EventKind::Perigee => "The Moon reaches the closest point of its orbit to Earth.",
+            EventKind::Apogee => "The Moon reaches the farthest point of its orbit from Earth.",
+        }
+    }
+}
+
 /// A single dated astronomical event in the scan window.
 #[derive(Debug, Clone)]
 pub struct AstroEvent {
     pub time: Epoch,
     pub category: EventCategory,
+    pub kind: EventKind,
     pub title: String,
     pub detail: String,
     /// Primary body involved, for optional viewing-area filtering.
@@ -230,6 +281,7 @@ fn scan_eclipses(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<Astro
             out.push(AstroEvent {
                 time: t,
                 category: EventCategory::Eclipse,
+                kind: EventKind::SolarEclipse,
                 title: "Solar eclipse".to_string(),
                 detail: format!("Sun and Moon {v:.2} deg apart (somewhere on Earth)"),
                 body: Some(Body::Sun),
@@ -242,6 +294,7 @@ fn scan_eclipses(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<Astro
             out.push(AstroEvent {
                 time: t,
                 category: EventCategory::Eclipse,
+                kind: EventKind::LunarEclipse,
                 title: "Lunar eclipse".to_string(),
                 detail: format!("Moon {anti:.2} deg from Earth's shadow centre"),
                 body: Some(Body::Moon),
@@ -259,6 +312,7 @@ fn scan_conjunctions(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<A
                     out.push(AstroEvent {
                         time: t,
                         category: EventCategory::Approach,
+                        kind: EventKind::Conjunction,
                         title: format!("{} - {} conjunction", a.name(), b.name()),
                         detail: format!("{v:.2} deg apart in the sky"),
                         body: Some(a),
@@ -288,6 +342,7 @@ fn scan_oppositions_elongations(
                 out.push(AstroEvent {
                     time: t,
                     category: EventCategory::Approach,
+                    kind: EventKind::Opposition,
                     title: format!("{} at opposition", body.name()),
                     detail: format!("opposite the Sun, {v:.0} deg elongation - best viewing"),
                     body: Some(body),
@@ -303,6 +358,7 @@ fn scan_oppositions_elongations(
                 out.push(AstroEvent {
                     time: t,
                     category: EventCategory::Approach,
+                    kind: EventKind::GreatestElongation,
                     title: format!("{} greatest elongation {side}", body.name()),
                     detail: format!("{v:.0} deg from the Sun"),
                     body: Some(body),
@@ -334,10 +390,10 @@ fn scan_apsides(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<AstroE
     ] {
         let f = |e: Epoch| sim.heliocentric_at(body, e).length();
         for (t, v) in extrema(start, end, 2.0, false, &f) {
-            out.push(apsis(t, body, "perihelion", v));
+            out.push(apsis(t, body, EventKind::Perihelion, v));
         }
         for (t, v) in extrema(start, end, 2.0, true, &f) {
-            out.push(apsis(t, body, "aphelion", v));
+            out.push(apsis(t, body, EventKind::Aphelion, v));
         }
     }
 
@@ -346,6 +402,7 @@ fn scan_apsides(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<AstroE
         out.push(AstroEvent {
             time: t,
             category: EventCategory::Approach,
+            kind: EventKind::Perigee,
             title: "Moon at perigee".to_string(),
             detail: format!("{:.0} km from Earth (closest)", v),
             body: Some(Body::Moon),
@@ -355,6 +412,7 @@ fn scan_apsides(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<AstroE
         out.push(AstroEvent {
             time: t,
             category: EventCategory::Approach,
+            kind: EventKind::Apogee,
             title: "Moon at apogee".to_string(),
             detail: format!("{:.0} km from Earth (farthest)", v),
             body: Some(Body::Moon),
@@ -362,10 +420,16 @@ fn scan_apsides(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec<AstroE
     }
 }
 
-fn apsis(time: Epoch, body: Body, which: &str, au: f64) -> AstroEvent {
+fn apsis(time: Epoch, body: Body, kind: EventKind, au: f64) -> AstroEvent {
+    let which = if kind == EventKind::Perihelion {
+        "perihelion"
+    } else {
+        "aphelion"
+    };
     AstroEvent {
         time,
         category: EventCategory::Approach,
+        kind,
         title: format!("{} {which}", body.name()),
         detail: format!("{au:.4} AU from the Sun"),
         body: Some(body),
@@ -384,59 +448,30 @@ fn scan_daily_rise_set(sim: &Simulation, start: Epoch, end: Epoch, out: &mut Vec
     while day <= hi {
         let sunrise = cross(sim, Body::Sun, day, SUNRISE_ALT, true);
         let sunset = cross(sim, Body::Sun, day, SUNRISE_ALT, false);
-        push_riseset(
-            out,
-            sunrise,
-            EventCategory::Sun,
-            "Sunrise",
-            Body::Sun,
-            start,
-            end,
-        );
-        push_riseset(
-            out,
-            sunset,
-            EventCategory::Sun,
-            "Sunset",
-            Body::Sun,
-            start,
-            end,
-        );
+        push_riseset(out, sunrise, EventKind::Sunrise, start, end);
+        push_riseset(out, sunset, EventKind::Sunset, start, end);
 
         let moonrise = cross(sim, Body::Moon, day, -0.5667, true);
         let moonset = cross(sim, Body::Moon, day, -0.5667, false);
-        push_riseset(
-            out,
-            moonrise,
-            EventCategory::RiseSet,
-            "Moonrise",
-            Body::Moon,
-            start,
-            end,
-        );
-        push_riseset(
-            out,
-            moonset,
-            EventCategory::RiseSet,
-            "Moonset",
-            Body::Moon,
-            start,
-            end,
-        );
+        push_riseset(out, moonrise, EventKind::Moonrise, start, end);
+        push_riseset(out, moonset, EventKind::Moonset, start, end);
         day += Duration::from_days(1.0);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn push_riseset(
     out: &mut Vec<AstroEvent>,
     time: Option<Epoch>,
-    category: EventCategory,
-    title: &str,
-    body: Body,
+    kind: EventKind,
     start: Epoch,
     end: Epoch,
 ) {
+    let (category, title, body) = match kind {
+        EventKind::Sunrise => (EventCategory::Sun, "Sunrise", Body::Sun),
+        EventKind::Sunset => (EventCategory::Sun, "Sunset", Body::Sun),
+        EventKind::Moonrise => (EventCategory::RiseSet, "Moonrise", Body::Moon),
+        _ => (EventCategory::RiseSet, "Moonset", Body::Moon),
+    };
     if let Some(t) = time
         && t >= start
         && t <= end
@@ -444,6 +479,7 @@ fn push_riseset(
         out.push(AstroEvent {
             time: t,
             category,
+            kind,
             title: title.to_string(),
             detail: String::new(),
             body: Some(body),

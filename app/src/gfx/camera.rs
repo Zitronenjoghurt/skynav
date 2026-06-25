@@ -53,6 +53,13 @@ impl OrbitCamera {
         self.goal = Some([self.yaw, 1.30, distance]);
     }
 
+    /// Keep easing the orbit centre toward `target` without touching the current
+    /// orientation or zoom. Re-armed every frame so the camera follows a moving
+    /// body as time advances (and re-centres after a time jump).
+    pub fn track(&mut self, target: Vec3) {
+        self.goal_target = Some(target);
+    }
+
     pub fn handle(&mut self, response: &egui::Response, ui: &egui::Ui) {
         if response.dragged() {
             let delta = response.drag_delta();

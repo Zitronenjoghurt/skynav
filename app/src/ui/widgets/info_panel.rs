@@ -1,6 +1,7 @@
-use crate::ui::Selection;
+use crate::ui::observed::Observed;
+use crate::ui::{Selection, icons};
 use crate::util::humanize_until;
-use egui::{Color32, Grid, Response, RichText, Widget};
+use egui::{Button, Color32, Grid, Response, RichText, Widget};
 use skynav::math::AU_KM;
 use skynav::{Body, Epoch, Simulation, Star};
 
@@ -10,26 +11,34 @@ pub struct InfoPanel<'a> {
     sim: &'a Simulation,
     stars: &'a [Star],
     selection: Option<Selection>,
+    observed: &'a mut Observed,
 }
 
 impl<'a> InfoPanel<'a> {
-    pub fn new(sim: &'a Simulation, stars: &'a [Star], selection: Option<Selection>) -> Self {
+    pub fn new(
+        sim: &'a Simulation,
+        stars: &'a [Star],
+        selection: Option<Selection>,
+        observed: &'a mut Observed,
+    ) -> Self {
         Self {
             sim,
             stars,
             selection,
+            observed,
         }
     }
 }
 
 impl Widget for InfoPanel<'_> {
-    fn ui(self, ui: &mut egui::Ui) -> Response {
+    fn ui(mut self, ui: &mut egui::Ui) -> Response {
         ui.scope(|ui| {
             ui.set_min_width(ui.available_width());
             match self.selection {
                 Some(Selection::Body(body)) => self.body_info(ui, body),
                 Some(Selection::Star(i)) if i < self.stars.len() => {
-                    self.star_info(ui, &self.stars[i])
+                    let star = self.stars[i].clone();
+                    self.star_info(ui, &star)
                 }
                 _ => {
                     ui.add_space(8.0);
@@ -44,7 +53,39 @@ impl Widget for InfoPanel<'_> {
 }
 
 impl InfoPanel<'_> {
-    fn body_info(&self, ui: &mut egui::Ui, body: Body) {
+    /// A prominent toggle for marking the current selection as observed.
+    fn observed_button(&mut self, ui: &mut egui::Ui) {
+        let Some(sel) = self.selection else { return };
+        let Some(key) = Observed::key_for(sel, self.stars) else {
+            return;
+        };
+        let is_obs = self.observed.contains(&key);
+        let (icon, text, color) = if is_obs {
+            (
+                icons::CHECK_CIRCLE,
+                "Observed",
+                Color32::from_rgb(120, 215, 150),
+            )
+        } else {
+            (
+                icons::CIRCLE,
+                "Mark as observed",
+                Color32::from_rgb(150, 160, 178),
+            )
+        };
+        if ui
+            .add(Button::new(
+                RichText::new(format!("{icon}  {text}")).color(color),
+            ))
+            .on_hover_text("Track which objects you have personally seen (Checklist tab).")
+            .clicked()
+        {
+            self.observed.toggle(&key);
+        }
+        ui.add_space(4.0);
+    }
+
+    fn body_info(&mut self, ui: &mut egui::Ui, body: Body) {
         heading(ui, body.name());
         let kind = if body == Body::Sun {
             "Star (the Sun)"
@@ -55,6 +96,7 @@ impl InfoPanel<'_> {
         };
         ui.weak(kind);
         ui.add_space(4.0);
+        self.observed_button(ui);
 
         let geo_au = self.sim.geocentric(body).length();
         let helio_au = self.sim.heliocentric(body).length();
@@ -164,13 +206,14 @@ impl InfoPanel<'_> {
         });
     }
 
-    fn star_info(&self, ui: &mut egui::Ui, star: &Star) {
+    fn star_info(&mut self, ui: &mut egui::Ui, star: &Star) {
         let name = if star.name.is_empty() {
             "Unnamed star"
         } else {
             &star.name
         };
         heading(ui, name);
+        self.observed_button(ui);
         ui.horizontal(|ui| {
             ui.weak("Star");
             let c = star.color;
