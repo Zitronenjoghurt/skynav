@@ -838,8 +838,10 @@ dependencies = [
  "ahash",
  "egui",
  "enum-map",
+ "jiff",
  "log",
  "profiling",
+ "serde",
 ]
 
 [[package]]
@@ -876,6 +878,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6866f3bfdf8207509a033af1a75a7b08abda06bbaaeae6669323fd5a097df2e9"
 dependencies = [
  "enum-map-derive",
+ "serde",
 ]
 
 [[package]]
@@ -1591,10 +1594,13 @@ checksum = "34f877a98676d2fb664698d74cc6a51ce6c484ce8c770f05d0108ec9090aeb46"
 dependencies = [
  "defmt",
  "jiff-static",
+ "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "wasm-bindgen",
+ "windows-link",
 ]
 
 [[package]]
@@ -2973,6 +2979,7 @@ dependencies = [
  "glam",
  "hifitime",
  "image",
+ "jiff",
  "js-sys",
  "log",
  "serde",

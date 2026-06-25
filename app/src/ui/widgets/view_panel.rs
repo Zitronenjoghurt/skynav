@@ -1,5 +1,6 @@
 use crate::gfx::LookAroundCamera;
 use crate::ui::icons;
+use crate::ui::widgets::panel_ui;
 use egui::{DragValue, Grid, Response, RichText, Slider, Widget};
 use skynav::{Patch, Simulation};
 
@@ -24,23 +25,27 @@ impl Widget for ViewPanel<'_> {
         let view = &mut self.sim.view;
         ui.scope(|ui| {
             ui.set_min_width(ui.available_width());
+            // Sliders fill the panel width (leaving room for the value box) so the
+            // tab does not hug the left edge and nothing gets clipped on the right.
+            ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(120.0);
+
+            ui.label(RichText::new("Viewing area").strong()).on_hover_text(
+                "Restrict what counts as visible to chosen patches of your sky.",
+            );
+            ui.add_space(4.0);
             ui.checkbox(&mut view.enabled, "Limit to my viewing area")
                 .on_hover_text(
                     "When on, the Sky, Visible and Events views only show what falls inside the patches below.",
                 );
-            ui.add_space(4.0);
+            ui.add_space(6.0);
 
             ui.label("Limiting magnitude")
                 .on_hover_text("Faintest star you can see from this site (lower = brighter skies / worse light pollution).");
-            ui.add(
-                Slider::new(&mut view.limiting_magnitude, 1.0..=6.5)
-                    .fixed_decimals(1)
-                    .text("mag"),
-            );
-            ui.add_space(6.0);
+            ui.add(Slider::new(&mut view.limiting_magnitude, 1.0..=6.5).fixed_decimals(1));
+
+            panel_ui::section(ui, "Sky patches");
 
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Sky patches").strong());
                 if ui
                     .small_button(format!("{} Add", icons::PLUS))
                     .on_hover_text("Add a sky patch covering the whole sky.")

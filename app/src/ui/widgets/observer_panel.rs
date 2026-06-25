@@ -1,5 +1,6 @@
-use egui::{ComboBox, DragValue, Grid, Id, Response, RichText, ScrollArea, TextEdit, Widget};
-use skynav::{Capital, Simulation, places};
+use crate::ui::widgets::panel_ui::{self, field};
+use egui::{ComboBox, DragValue, Id, Response, RichText, ScrollArea, TextEdit, Widget};
+use skynav::{Body, Capital, Simulation, places};
 
 /// Editor for the observer's geodetic location.
 pub struct ObserverPanel<'a> {
@@ -14,40 +15,56 @@ impl<'a> ObserverPanel<'a> {
 
 impl Widget for ObserverPanel<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
-        let obs = &mut self.sim.observer;
+        let sim = self.sim;
         ui.scope(|ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(RichText::new("Observer location").strong())
-                .on_hover_text("Where on Earth the Sky and Events views are computed for.");
-            ui.add_space(4.0);
-            Grid::new("observer_grid").num_columns(2).show(ui, |ui| {
-                ui.label("Latitude")
-                    .on_hover_text("Degrees north (+) or south (-) of the equator.");
+            ui.label(RichText::new("Observer").strong()).on_hover_text(
+                "The body and location the Sky, Globe and Events views observe from.",
+            );
+
+            panel_ui::section(ui, "Vantage");
+            field(ui, "Standing on", |ui| {
+                ComboBox::from_id_salt("observer_body")
+                    .selected_text(sim.observer_body.name())
+                    .show_ui(ui, |ui| {
+                        for body in Body::ALL {
+                            ui.selectable_value(&mut sim.observer_body, body, body.name());
+                        }
+                    });
+            });
+
+            let on_earth = sim.observer_body == Body::Earth;
+            let obs = &mut sim.observer;
+            panel_ui::section(ui, "Location");
+            field(ui, "Latitude", |ui| {
                 ui.add(
                     DragValue::new(&mut obs.latitude_deg)
                         .range(-90.0..=90.0)
                         .speed(0.1)
                         .suffix("°"),
-                );
-                ui.end_row();
-                ui.label("Longitude")
-                    .on_hover_text("Degrees east (+) or west (-) of Greenwich.");
+                )
+                .on_hover_text("Degrees north (+) or south (-) of the equator.");
+            });
+            field(ui, "Longitude", |ui| {
                 ui.add(
                     DragValue::new(&mut obs.longitude_deg)
                         .range(-180.0..=180.0)
                         .speed(0.1)
                         .suffix("°"),
-                );
-                ui.end_row();
-                ui.label("Height")
-                    .on_hover_text("Elevation above sea level, in metres.");
-                ui.add(DragValue::new(&mut obs.height_m).suffix(" m"));
-                ui.end_row();
+                )
+                .on_hover_text("Degrees east (+) or west (-) of the prime meridian.");
             });
+            field(ui, "Height", |ui| {
+                ui.add(DragValue::new(&mut obs.height_m).suffix(" m"))
+                    .on_hover_text("Elevation above the reference surface, in metres.");
+            });
+
             ui.add_space(6.0);
-            capital_picker(ui, obs);
-            ui.add_space(4.0);
-            ui.weak("Tip: click the globe to set this location.");
+            if on_earth {
+                capital_picker(ui, obs);
+                ui.add_space(4.0);
+            }
+            ui.weak("Tip: click the globe to set the location.");
         })
         .response
     }

@@ -27,15 +27,24 @@ impl Observer {
     }
 
     /// Geocentric rectangular position in the body-fixed (ITRS) frame, in AU,
-    /// on the WGS84 ellipsoid.
+    /// on the WGS84 (Earth) ellipsoid.
     pub fn geocentric_itrs(&self) -> crate::math::DVec3 {
-        const A_KM: f64 = 6378.137;
-        const F: f64 = 1.0 / 298.257_223_563;
-        let e2 = F * (2.0 - F);
+        self.geocentric_fixed(6378.137, 1.0 / 298.257_223_563)
+    }
+
+    /// Body-fixed rectangular position (AU) on an arbitrary reference ellipsoid,
+    /// given its equatorial radius (km) and flattening. Generalises
+    /// `geocentric_itrs` so an observer can stand on any body.
+    pub fn geocentric_fixed(
+        &self,
+        equatorial_radius_km: f64,
+        flattening: f64,
+    ) -> crate::math::DVec3 {
+        let e2 = flattening * (2.0 - flattening);
 
         let (sin_lat, cos_lat) = self.latitude_rad().sin_cos();
         let (sin_lon, cos_lon) = self.longitude_rad().sin_cos();
-        let n = A_KM / (1.0 - e2 * sin_lat * sin_lat).sqrt();
+        let n = equatorial_radius_km / (1.0 - e2 * sin_lat * sin_lat).sqrt();
         let h = self.height_m / 1000.0;
 
         let xy = (n + h) * cos_lat;

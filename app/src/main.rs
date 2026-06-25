@@ -36,6 +36,8 @@ fn main() {
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: wgpu_options(),
+        // 32-bit depth buffer for the 3D scene (planets as real spheres).
+        depth_buffer: 32,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 760.0])
             .with_min_inner_size([720.0, 420.0])
@@ -61,7 +63,10 @@ fn main() {
     console_error_panic_hook::set_once();
     eframe::WebLogger::init(log::LevelFilter::Debug).ok();
 
-    let web_options = eframe::WebOptions::default();
+    let web_options = eframe::WebOptions {
+        depth_buffer: 32,
+        ..Default::default()
+    };
 
     wasm_bindgen_futures::spawn_local(async {
         let document = web_sys::window()

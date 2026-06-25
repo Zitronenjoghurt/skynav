@@ -1,5 +1,5 @@
 use crate::VERSION;
-use crate::gfx::{GlobeRenderer, LookAroundCamera, OrbitCamera, SkyRenderer};
+use crate::gfx::{GlobeRenderer, LookAroundCamera, OrbitCamera, SkyRenderer, UnifiedCamera};
 use crate::ui::icons;
 use crate::ui::tabs::{SkyTabViewer, Tab, default_dock};
 use crate::ui::widgets::{
@@ -19,7 +19,7 @@ const STATE_KEY: &str = "skynav_state";
 pub struct SkyNav {
     sim: Simulation,
     dock: DockState<Tab>,
-    globe_camera: OrbitCamera,
+    globe_camera: UnifiedCamera,
     system_camera: OrbitCamera,
     sky_camera: LookAroundCamera,
     stars: Vec<Star>,
@@ -41,6 +41,7 @@ pub struct SkyNav {
 struct PersistState {
     dock: DockState<Tab>,
     observer: Observer,
+    observer_body: Body,
     rate: f64,
     playing: bool,
     selection: Option<Selection>,
@@ -51,7 +52,7 @@ struct PersistState {
     system_layers: SystemLayers,
     events_filter: EventsFilter,
     view: ViewWindow,
-    globe_camera: OrbitCamera,
+    globe_camera: UnifiedCamera,
     system_camera: OrbitCamera,
     sky_camera: LookAroundCamera,
 }
@@ -69,8 +70,8 @@ impl SkyNav {
         let mut app = Self {
             sim: Simulation::new(crate::util::now_epoch()),
             dock: default_dock(),
-            globe_camera: OrbitCamera::default(),
-            system_camera: OrbitCamera::new(0.6, 0.6, 30.0),
+            globe_camera: UnifiedCamera::default(),
+            system_camera: OrbitCamera::new(0.6, 0.6, 120.0),
             sky_camera: LookAroundCamera::default(),
             stars: catalog::load_stars(),
             constellations: constellations::load(),
@@ -97,6 +98,7 @@ impl SkyNav {
     fn restore(&mut self, state: PersistState) {
         self.dock = state.dock;
         self.sim.observer = state.observer;
+        self.sim.observer_body = state.observer_body;
         self.sim.clock.rate = state.rate;
         self.sim.clock.playing = state.playing;
         self.selection = state.selection;
@@ -133,13 +135,39 @@ impl SkyNav {
     /// pulsing highlight is enough to locate the object there.
     fn focus(&mut self, sel: Selection, ctx: &egui::Context) {
         let horizontal = match sel {
-            Selection::Body(Body::Earth) => return,
+            Selection::Body(body) if body == self.sim.observer_body => return,
             Selection::Body(body) => self.sim.observed_body(body),
             Selection::Star(i) => self.stars.get(i).and_then(|s| self.sim.observed_star(s)),
         };
         if let Some(h) = horizontal {
             self.sky_camera.look_at(h.azimuth as f32, h.altitude as f32);
             ctx.request_repaint();
+        }
+    }
+
+    /// Global time keyboard shortcuts: space toggles play/pause, arrow keys step
+    /// the clock (±1 hour, or ±1 day with Shift). Suppressed while a text field
+    /// (the search box) has focus.
+    fn handle_keys(&mut self, ui: &egui::Ui) {
+        if ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
+        let (toggle, step) = ui.input(|i| {
+            let unit = if i.modifiers.shift { 86_400.0 } else { 3_600.0 };
+            let mut step = 0.0;
+            if i.key_pressed(egui::Key::ArrowRight) {
+                step += unit;
+            }
+            if i.key_pressed(egui::Key::ArrowLeft) {
+                step -= unit;
+            }
+            (i.key_pressed(egui::Key::Space), step)
+        });
+        if toggle {
+            self.sim.clock.playing = !self.sim.clock.playing;
+        }
+        if step != 0.0 {
+            self.sim.clock.epoch += hifitime::Duration::from_seconds(step);
         }
     }
 
@@ -150,11 +178,24 @@ impl SkyNav {
                 ui.label(format!("skynav v{VERSION}"));
                 ui.separator();
                 ui.menu_button(format!("{} Tabs", icons::PLUS), |ui| {
-                    for tab in Tab::ALL {
-                        if ui.button(tab.title()).clicked() {
-                            to_open.push(tab);
-                            ui.close();
+                    ui.set_min_width(180.0);
+                    for (group, tabs) in Tab::GROUPS {
+                        ui.label(egui::RichText::new(*group).small().weak());
+                        for tab in *tabs {
+                            if ui.button(tab.title()).on_hover_text(tab.blurb()).clicked() {
+                                to_open.push(*tab);
+                                ui.close();
+                            }
                         }
+                        ui.separator();
+                    }
+                    if ui
+                        .button(format!("{} Reset layout", icons::ARROW_COUNTER_CLOCKWISE))
+                        .on_hover_text("Restore the default tab arrangement.")
+                        .clicked()
+                    {
+                        self.dock = default_dock();
+                        ui.close();
                     }
                 });
                 ui.separator();
@@ -214,6 +255,7 @@ impl eframe::App for SkyNav {
         if self.sim.clock.playing {
             ui.ctx().request_repaint();
         }
+        self.handle_keys(ui);
 
         let mut to_open: Vec<Tab> = Vec::new();
         self.top_bar(ui, &mut to_open);
@@ -267,6 +309,7 @@ impl eframe::App for SkyNav {
         let state = PersistState {
             dock: self.dock.clone(),
             observer: self.sim.observer,
+            observer_body: self.sim.observer_body,
             rate: self.sim.clock.rate,
             playing: self.sim.clock.playing,
             selection: self.selection,

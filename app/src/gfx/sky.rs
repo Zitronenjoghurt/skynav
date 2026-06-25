@@ -153,7 +153,7 @@ impl SkyRenderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(crate::gfx::depth_state_background()),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -183,7 +183,7 @@ impl SkyRenderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(crate::gfx::depth_state_background()),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -274,6 +274,29 @@ impl CallbackTrait for SkyCallback {
             }
         }
     }
+}
+
+/// Two soft, warm corona layers under the Sun's core billboard. Layered with the
+/// crisp Gaussian core (see `sky.wgsl`) this reads as a smooth solar glow that
+/// scales with the Sun's brightness (so it fades correctly when the billboard
+/// hands off to the real sphere). Only the Sun gets this - stars and planets are
+/// rendered as crisp points, which looks far better than blanket bloom.
+pub fn sun_glow(core: &SkyInstance) -> [SkyInstance; 2] {
+    let b = core.brightness;
+    [
+        SkyInstance {
+            position: core.position,
+            size: core.size * 2.4,
+            color: core.color,
+            brightness: b * 0.20,
+        },
+        SkyInstance {
+            position: core.position,
+            size: core.size * 5.0,
+            color: core.color,
+            brightness: b * 0.07,
+        },
+    ]
 }
 
 /// Render the sky (lines beneath billboards) into `rect`.

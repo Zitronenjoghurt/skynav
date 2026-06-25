@@ -39,9 +39,11 @@ impl<'a> BodiesPanel<'a> {
 struct Row {
     body: Body,
     helio: f64,
-    geo: f64,
-    ra_h: f64,
-    dec: f64,
+    /// Geocentric distance / RA-Dec are `None` for Earth itself (the origin of
+    /// the geocentric frame, so they would be zero / undefined).
+    geo: Option<f64>,
+    radec: Option<(f64, f64)>,
+    /// Az/Alt are `None` for the body you are standing on (no sky position).
     az: Option<f64>,
     alt: Option<f64>,
 }
@@ -55,16 +57,15 @@ impl Widget for BodiesPanel<'_> {
 
         let mut rows: Vec<Row> = Body::ALL
             .iter()
-            .filter(|b| **b != Body::Earth)
             .map(|&body| {
-                let (ra_h, dec) = ra_dec(self.sim.geocentric_equatorial(body));
-                let observed = self.sim.observed_body(body);
+                let is_earth = body == Body::Earth;
+                let is_here = body == self.sim.observer_body;
+                let observed = (!is_here).then(|| self.sim.observed_body(body)).flatten();
                 Row {
                     body,
                     helio: self.sim.heliocentric(body).length(),
-                    geo: self.sim.geocentric(body).length(),
-                    ra_h,
-                    dec,
+                    geo: (!is_earth).then(|| self.sim.geocentric(body).length()),
+                    radec: (!is_earth).then(|| ra_dec(self.sim.geocentric_equatorial(body))),
                     az: observed.map(|h| h.azimuth_deg()),
                     alt: observed.map(|h| h.altitude_deg()),
                 }
@@ -139,11 +140,21 @@ impl Widget for BodiesPanel<'_> {
                             row.col(|ui| {
                                 ui.label(format!("{:.4}", r.helio));
                             });
-                            row.col(|ui| {
-                                ui.label(format!("{:.4}", r.geo));
+                            row.col(|ui| match r.geo {
+                                Some(g) => {
+                                    ui.label(format!("{g:.4}"));
+                                }
+                                None => {
+                                    ui.label("-");
+                                }
                             });
-                            row.col(|ui| {
-                                ui.label(format!("{:.2}h {:+.1}°", r.ra_h, r.dec));
+                            row.col(|ui| match r.radec {
+                                Some((ra_h, dec)) => {
+                                    ui.label(format!("{ra_h:.2}h {dec:+.1}°"));
+                                }
+                                None => {
+                                    ui.label("-");
+                                }
                             });
                             row.col(|ui| match r.az {
                                 Some(az) => {
@@ -201,7 +212,10 @@ fn sort_rows(rows: &mut [Row], key: SortKey, asc: bool) {
         let ord = match key {
             SortKey::Name => a.body.name().cmp(b.body.name()),
             SortKey::Helio => a.helio.total_cmp(&b.helio),
-            SortKey::Geo => a.geo.total_cmp(&b.geo),
+            SortKey::Geo => a
+                .geo
+                .unwrap_or(f64::INFINITY)
+                .total_cmp(&b.geo.unwrap_or(f64::INFINITY)),
             SortKey::Altitude => a
                 .alt
                 .unwrap_or(f64::NEG_INFINITY)

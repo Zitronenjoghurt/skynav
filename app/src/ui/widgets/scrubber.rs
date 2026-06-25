@@ -2,10 +2,15 @@ use crate::ui::cache;
 use crate::ui::icons;
 use crate::util::now_epoch;
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Widget, vec2,
+    Align2, Color32, CornerRadius, DragValue, FontId, Response, Sense, Slider, Stroke, StrokeKind,
+    Widget, vec2,
 };
+use egui_extras::DatePickerButton;
 use hifitime::Duration;
+use jiff::civil::Date;
+use skynav::math::equatorial_radec;
 use skynav::{Body, Epoch, Simulation};
+use std::f64::consts::{PI, TAU};
 
 const DAY_SECONDS: f64 = 86_400.0;
 
@@ -30,7 +35,11 @@ impl<'a> Scrubber<'a> {
 impl Widget for Scrubber<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let events = cache::sun_day(ui, self.sim);
+        let (lst, solar) = local_times(self.sim);
         ui.vertical(|ui| {
+            // One sleek control row, folding in everything the old Time tab did:
+            // transport, a real calendar date picker + UTC time editor, the
+            // Solar/LST readout, and the time rate (fast-forward / rewind).
             ui.horizontal(|ui| {
                 let clock = &mut self.sim.clock;
                 let play = if clock.playing {
@@ -54,18 +63,79 @@ impl Widget for Scrubber<'_> {
                     clock.epoch = now_epoch();
                 }
                 ui.separator();
-                ui.monospace(readout(clock.epoch))
-                    .on_hover_text("Current simulated instant (UTC).");
+                ui.strong(weekday(clock.epoch));
+                date_time_controls(ui, &mut clock.epoch);
+                ui.separator();
+                ui.monospace(format!("Solar {solar}  LST {lst}"))
+                    .on_hover_text(
+                        "Local apparent solar time and local sidereal time at the observer.",
+                    );
+                ui.separator();
+                ui.label("Rate").on_hover_text(
+                    "Simulated seconds per real second. Drag for fast-forward or rewind.",
+                );
+                ui.add(
+                    Slider::new(&mut clock.rate, -31_557_600.0..=31_557_600.0)
+                        .logarithmic(true)
+                        .smallest_positive(1.0)
+                        .custom_formatter(|v, _| format_rate(v)),
+                );
+                for (label, rate) in RATE_PRESETS {
+                    if ui.small_button(*label).clicked() {
+                        clock.rate = *rate;
+                    }
+                }
             });
-            ui.add_space(2.0);
+            ui.add_space(3.0);
             let start = day_start(self.sim.clock.epoch);
             let start_alt = self
                 .sim
                 .geometric_altitude_at(Body::Sun, start)
                 .to_degrees();
-            track(ui, &mut self.sim.clock.epoch, &events, start_alt);
+            // The day track spans the full width of the bottom panel.
+            let width = ui.available_width();
+            track(ui, &mut self.sim.clock.epoch, &events, start_alt, width);
         })
         .response
+    }
+}
+
+/// Local sidereal time and local apparent solar time, formatted HH:MM.
+fn local_times(sim: &Simulation) -> (String, String) {
+    let lst = (sim.earth_rotation_angle() + sim.observer.longitude_rad()).rem_euclid(TAU);
+    let (sun_ra, _) = equatorial_radec(sim.geocentric_equatorial(Body::Sun));
+    let solar = (lst - sun_ra + PI).rem_euclid(TAU);
+    (clock_string(lst), clock_string(solar))
+}
+
+/// Format an angle (radians, 0..2pi) as a 24-hour HH:MM clock.
+fn clock_string(angle: f64) -> String {
+    let hours = angle.to_degrees() / 15.0;
+    let h = hours.floor() as i32;
+    let m = ((hours - h as f64) * 60.0).floor() as i32;
+    format!("{h:02}:{m:02}")
+}
+
+const RATE_PRESETS: &[(&str, f64)] = &[
+    ("1x", 1.0),
+    ("1min/s", 60.0),
+    ("1h/s", 3_600.0),
+    ("1d/s", 86_400.0),
+    ("1yr/s", 31_557_600.0),
+];
+
+fn format_rate(v: f64) -> String {
+    let a = v.abs();
+    if a < 60.0 {
+        format!("{v:.0} s/s")
+    } else if a < 3_600.0 {
+        format!("{:.1} min/s", v / 60.0)
+    } else if a < 86_400.0 {
+        format!("{:.1} h/s", v / 3_600.0)
+    } else if a < 31_557_600.0 {
+        format!("{:.1} d/s", v / 86_400.0)
+    } else {
+        format!("{:.2} yr/s", v / 31_557_600.0)
     }
 }
 
@@ -76,15 +146,6 @@ const STEPS: &[(&str, f64, &str)] = &[
     ("+1d", DAY_SECONDS, "Forward one day"),
 ];
 
-/// "Thu 2026-06-25  14:30 UTC".
-fn readout(epoch: Epoch) -> String {
-    let (y, mo, d, h, mi, _, _) = epoch.to_gregorian_utc();
-    format!(
-        "{}  {y:04}-{mo:02}-{d:02}  {h:02}:{mi:02} UTC",
-        weekday(epoch)
-    )
-}
-
 fn weekday(epoch: Epoch) -> &'static str {
     // Days since 2000-01-01 (a Saturday) modulo 7.
     let days = (epoch.to_jde_utc_days() - 2_451_544.5).floor() as i64;
@@ -92,10 +153,51 @@ fn weekday(epoch: Epoch) -> &'static str {
     NAMES[days.rem_euclid(7) as usize]
 }
 
-/// Full-width day track: layered night/twilight/day shading, hour ticks,
-/// sunrise/sunset markers and a draggable handle.
-fn track(ui: &mut egui::Ui, epoch: &mut Epoch, events: &skynav::DayEvents, start_alt_deg: f64) {
-    let width = ui.available_width().max(160.0);
+/// A calendar date picker plus UTC hour/minute editors that together set the
+/// clock to any instant - the editing half of the old Time tab, inline.
+fn date_time_controls(ui: &mut egui::Ui, epoch: &mut Epoch) {
+    let (y, mo, d, h, mi, s, _) = epoch.to_gregorian_utc();
+    let mut date =
+        Date::new(y as i16, mo as i8, d as i8).unwrap_or_else(|_| Date::new(2000, 1, 1).unwrap());
+    let mut hour = h as i32;
+    let mut minute = mi as i32;
+
+    let mut changed = ui
+        .add(DatePickerButton::new(&mut date).id_salt("scrubber_date"))
+        .on_hover_text("Pick the UTC date from a calendar.")
+        .changed();
+    changed |= ui
+        .add(DragValue::new(&mut hour).range(0..=23).suffix("h"))
+        .on_hover_text("Hour (UTC).")
+        .changed();
+    changed |= ui
+        .add(DragValue::new(&mut minute).range(0..=59).suffix("m"))
+        .on_hover_text("Minute (UTC).")
+        .changed();
+
+    if changed {
+        *epoch = Epoch::from_gregorian_utc(
+            date.year() as i32,
+            date.month() as u8,
+            date.day() as u8,
+            hour as u8,
+            minute as u8,
+            s,
+            0,
+        );
+    }
+}
+
+/// Day track: layered night/twilight/day shading, hour ticks, sunrise/sunset
+/// markers and a draggable handle. Rendered at the given `width`.
+fn track(
+    ui: &mut egui::Ui,
+    epoch: &mut Epoch,
+    events: &skynav::DayEvents,
+    start_alt_deg: f64,
+    width: f32,
+) {
+    let width = width.max(160.0);
     let (rect, response) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     let start = day_start(*epoch);

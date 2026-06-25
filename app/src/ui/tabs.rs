@@ -1,7 +1,7 @@
-use crate::gfx::{LookAroundCamera, OrbitCamera};
+use crate::gfx::{LookAroundCamera, OrbitCamera, UnifiedCamera};
 use crate::ui::widgets::{
     BodiesPanel, ChecklistPanel, EventsFilter, EventsPanel, GlobeLayers, GlobeView, InfoPanel,
-    ObserverPanel, OrbitCache, SkyLayers, SkyView, SystemLayers, SystemView, TimePanel, ViewPanel,
+    ObserverPanel, OrbitCache, SkyLayers, SkyView, SystemLayers, SystemView, ViewPanel,
     VisiblePanel,
 };
 use crate::ui::{Observed, Selection, icons};
@@ -16,7 +16,6 @@ pub enum Tab {
     Info,
     Visible,
     Checklist,
-    Time,
     Observer,
     Bodies,
     Events,
@@ -24,29 +23,47 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [
-        Tab::Globe,
-        Tab::System,
-        Tab::Sky,
-        Tab::Info,
-        Tab::Visible,
-        Tab::Checklist,
-        Tab::Time,
-        Tab::Observer,
-        Tab::Bodies,
-        Tab::Events,
-        Tab::View,
+    /// Tabs grouped by purpose, for a friendlier "open a tab" menu.
+    pub const GROUPS: &'static [(&'static str, &'static [Tab])] = &[
+        ("3D views", &[Tab::Globe, Tab::System, Tab::Sky]),
+        (
+            "Information",
+            &[
+                Tab::Info,
+                Tab::Visible,
+                Tab::Bodies,
+                Tab::Events,
+                Tab::Checklist,
+            ],
+        ),
+        ("Setup", &[Tab::Observer, Tab::View]),
     ];
+
+    /// One-line description shown as a tooltip in the open-a-tab menu, so users
+    /// can tell at a glance what each tab is for.
+    pub fn blurb(&self) -> &'static str {
+        match self {
+            Tab::Globe => "Fly from a planet's surface out to the whole solar system.",
+            Tab::System => "Top-down orrery of the planets on their orbits.",
+            Tab::Sky => "First-person planetarium of the sky above the observer.",
+            Tab::Info => "Detailed facts about the selected body or star.",
+            Tab::Visible => "Everything currently above the horizon, highest first.",
+            Tab::Checklist => "Track which objects you have personally observed.",
+            Tab::Observer => "Set the body and location you are observing from.",
+            Tab::Bodies => "Table of every Solar System body with live data.",
+            Tab::Events => "Upcoming and past eclipses, conjunctions, rises and sets.",
+            Tab::View => "Limit what counts as visible to patches of your sky.",
+        }
+    }
 
     pub fn title(&self) -> String {
         let (icon, label) = match self {
-            Tab::Globe => (icons::GLOBE_HEMISPHERE_WEST, "Globe"),
+            Tab::Globe => (icons::GLOBE_HEMISPHERE_WEST, "Explorer"),
             Tab::System => (icons::ATOM, "System"),
             Tab::Sky => (icons::STAR, "Sky"),
             Tab::Info => (icons::INFO, "Info"),
             Tab::Visible => (icons::EYE, "Visible"),
             Tab::Checklist => (icons::LIST_CHECKS, "Checklist"),
-            Tab::Time => (icons::CLOCK, "Time"),
             Tab::Observer => (icons::MAP_PIN, "Observer"),
             Tab::Bodies => (icons::PLANET, "Bodies"),
             Tab::Events => (icons::CALENDAR_BLANK, "Events"),
@@ -56,29 +73,28 @@ impl Tab {
     }
 }
 
-/// Default workspace: the 3D views on the left, control panels docked right.
+/// Default workspace: the Explorer (with the System orrery beside it) on the
+/// left, control panels docked right. The old first-person Sky view is folded
+/// into the Explorer's surface mode, so it is no longer a default tab (still
+/// openable from the "+" menu).
 pub fn default_dock() -> DockState<Tab> {
+    // Big Explorer (with System and Sky as tabs) on the left; the right side is a
+    // three-row column: Info/Checklist on top, the Bodies table in the middle,
+    // and a bottom row split into Visible/Events and Observer/View.
     let mut dock = DockState::new(vec![Tab::Globe, Tab::System, Tab::Sky]);
-    dock.main_surface_mut().split_right(
-        NodeIndex::root(),
-        0.72,
-        vec![
-            Tab::Info,
-            Tab::Visible,
-            Tab::Checklist,
-            Tab::Time,
-            Tab::Observer,
-            Tab::Bodies,
-            Tab::Events,
-            Tab::View,
-        ],
-    );
+    let surface = dock.main_surface_mut();
+    let [_, top] = surface.split_right(NodeIndex::root(), 0.64, vec![Tab::Info]);
+    let [top, middle] = surface.split_below(top, 0.32, vec![Tab::Bodies]);
+    let [_, bottom] = surface.split_below(middle, 0.46, vec![Tab::Visible, Tab::Events]);
+    surface.split_right(bottom, 0.5, vec![Tab::Observer, Tab::View]);
+    // Top row split side by side: Info on the left, Checklist on the right.
+    surface.split_right(top, 0.5, vec![Tab::Checklist]);
     dock
 }
 
 pub struct SkyTabViewer<'a> {
     pub sim: &'a mut Simulation,
-    pub globe_camera: &'a mut OrbitCamera,
+    pub globe_camera: &'a mut UnifiedCamera,
     pub system_camera: &'a mut OrbitCamera,
     pub sky_camera: &'a mut LookAroundCamera,
     pub stars: &'a [Star],
@@ -112,8 +128,10 @@ impl TabViewer for SkyTabViewer<'_> {
                     self.sim,
                     self.globe_camera,
                     self.stars,
+                    self.constellations,
                     self.selection,
                     self.globe_layers,
+                    self.system_orbits,
                 ));
             }
             Tab::System => {
@@ -160,9 +178,6 @@ impl TabViewer for SkyTabViewer<'_> {
                     self.selection,
                 ));
             }
-            Tab::Time => {
-                ui.add(TimePanel::new(self.sim));
-            }
             Tab::Observer => {
                 ui.add(ObserverPanel::new(self.sim));
             }
@@ -179,11 +194,15 @@ impl TabViewer for SkyTabViewer<'_> {
     }
 
     fn add_popup(&mut self, ui: &mut egui::Ui, _node: NodePath) {
-        ui.set_min_width(140.0);
-        for tab in Tab::ALL {
-            if ui.button(tab.title()).clicked() {
-                self.to_open.push(tab);
+        ui.set_min_width(170.0);
+        for (group, tabs) in Tab::GROUPS {
+            ui.label(egui::RichText::new(*group).small().weak());
+            for tab in *tabs {
+                if ui.button(tab.title()).on_hover_text(tab.blurb()).clicked() {
+                    self.to_open.push(*tab);
+                }
             }
+            ui.add_space(2.0);
         }
     }
 }

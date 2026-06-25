@@ -1,6 +1,7 @@
 use crate::gfx::OrbitCamera;
+use crate::gfx::globe::{self, BodyDraw};
 use crate::ui::Selection;
-use crate::ui::overlay::{label_at, project};
+use crate::ui::overlay::{label_at, project, project_segment};
 use egui::{
     Align2, Color32, FontId, Frame, Id, Pos2, Rect, Response, Sense, Stroke, Vec2, Widget, pos2,
     vec2,
@@ -12,15 +13,17 @@ use skynav::math::AU_KM;
 use skynav::{Body, Simulation};
 
 /// Camera distance below which the in-scene Earth-Moon system is drawn.
-const MOON_ZOOM_DIST: f32 = 16.0;
+const MOON_ZOOM_DIST: f32 = 6.0;
+/// Night-side floor for the planet spheres so a back-lit world stays faintly
+/// visible from across the system instead of vanishing into black.
+const NIGHT_SHADE: f32 = 0.07;
 
 /// Faked Moon-orbit radius around Earth in the heliocentric view. The true Moon
-/// distance is invisibly small at this scale, so it is exaggerated - but tied to
-/// the zoom and clamped well inside the gap to Venus's orbit, so it reads as a
-/// tight satellite instead of slicing through neighbouring orbits. The same
-/// zoom-relative scheme will extend to the other planets' moons later.
+/// distance is invisibly small at this scale, so it is exaggerated - clamped to
+/// sit outside Earth's sphere but well inside the gap to Venus's orbit, so it
+/// reads as a tight satellite. The same scheme will extend to other moons later.
 fn moon_orbit_r(camera_distance: f32) -> f32 {
-    (camera_distance * 0.04).clamp(0.05, 0.18)
+    (camera_distance * 0.08).clamp(0.22, 0.6)
 }
 
 /// Toggleable System-view options, persisted across sessions.
@@ -72,10 +75,31 @@ const INSET_MAX_AU: f32 = 0.0029;
 #[derive(Default)]
 pub struct OrbitCache {
     paths: Vec<(Body, Vec<Vec3>)>,
+    eq_paths: Vec<(Body, Vec<Vec3>)>,
     moon_ring: Vec<Vec2>,
 }
 
 impl OrbitCache {
+    /// Orbital paths in the equatorial J2000 render frame (compressed System
+    /// scale), for the Explorer continuum. Heliocentric and observer-agnostic;
+    /// the Explorer subtracts the observer's position and applies its own scale.
+    pub(crate) fn equatorial_paths(&mut self, sim: &Simulation) -> &[(Body, Vec<Vec3>)] {
+        if self.eq_paths.is_empty() {
+            self.eq_paths = PLANETS
+                .iter()
+                .map(|&body| {
+                    let points = sim
+                        .orbit_path(body, ORBIT_SAMPLES)
+                        .iter()
+                        .map(|&p| to_render_equatorial(p))
+                        .collect();
+                    (body, points)
+                })
+                .collect();
+        }
+        &self.eq_paths
+    }
+
     fn paths(&mut self, sim: &Simulation) -> &[(Body, Vec<Vec3>)] {
         if self.paths.is_empty() {
             self.paths = PLANETS
@@ -145,21 +169,20 @@ impl Widget for SystemView<'_> {
         painter.rect_filled(rect, 0.0, Color32::from_rgb(3, 4, 9));
         self.camera.handle(&response, ui);
 
-        // Pan/frame the camera onto a freshly selected body (top-down), so we
-        // can zoom into a planet and its moons.
+        // Pan/zoom the camera onto a freshly selected body, once. The camera then
+        // stays put (it used to re-centre every frame to follow the body as time
+        // advanced, which made it drift and wobble around the target).
         self.frame_on_select(ui);
-
-        // Keep the focus on the selected body as it moves: advancing time or
-        // jumping to an event shifts the planet, so re-aim the orbit centre at
-        // its current position (preserving the user's orientation and zoom).
-        if let Some(Selection::Body(body)) = *self.selection {
-            let pos = self.body_render(body);
-            self.camera.track(pos);
-        }
 
         let aspect = rect.width() / rect.height().max(1.0);
         let view_proj = self.camera.view_proj(aspect);
         let hover = response.hover_pos();
+
+        // Real 3D planets behind the egui overlay. The flat dot-markers below
+        // fade out as the camera zooms in, so far out it reads as a schematic
+        // orrery and up close the bodies become textured, lit spheres.
+        globe::show_many(ui, rect, view_proj, self.sphere_draws(view_proj, rect));
+        let marker_fade = smoothstep(4.0, 16.0, self.camera.distance);
 
         // Screen positions of every clickable body (Sun first).
         let mut screen: Vec<(Body, Pos2)> = Vec::new();
@@ -227,7 +250,7 @@ impl Widget for SystemView<'_> {
             draw_body(
                 &painter,
                 p,
-                8.0,
+                8.0 * marker_fade,
                 sun,
                 "Sun",
                 Marks {
@@ -246,7 +269,7 @@ impl Widget for SystemView<'_> {
                 draw_body(
                     &painter,
                     p,
-                    radius,
+                    radius * marker_fade,
                     color,
                     body.name(),
                     Marks {
@@ -388,13 +411,53 @@ impl SystemView<'_> {
         );
     }
 
-    /// When the selection changes to a body, smoothly frame it top-down.
+    /// Sun + planets as 3D spheres in render space, lit from the Sun at the
+    /// origin. Radii are exaggerated (true scale would be invisible) but readable.
+    fn sphere_draws(&self, view_proj: Mat4, rect: Rect) -> Vec<BodyDraw> {
+        let mut draws = Vec::with_capacity(PLANETS.len() + 1);
+        if on_screen(view_proj, Vec3::ZERO, rect) {
+            draws.push(globe::draw_body(
+                Body::Sun,
+                Mat4::from_scale(Vec3::splat(sphere_radius(Body::Sun))),
+                Vec3::Z,
+            ));
+        }
+        for body in PLANETS {
+            let pos = to_render(self.sim.heliocentric(body));
+            if !on_screen(view_proj, pos, rect) {
+                continue;
+            }
+            let model =
+                Mat4::from_translation(pos) * Mat4::from_scale(Vec3::splat(sphere_radius(body)));
+            let sun_dir = (-pos).normalize_or_zero();
+            draws.push(globe::draw_body_lit(body, model, sun_dir, NIGHT_SHADE));
+        }
+        // The Moon on its faked ring around Earth, when zoomed in close enough.
+        if let Some(mp) = self.moon_scene_pos()
+            && on_screen(view_proj, mp, rect)
+        {
+            let model = Mat4::from_translation(mp)
+                * Mat4::from_scale(Vec3::splat(sphere_radius(Body::Moon)));
+            draws.push(globe::draw_body_lit(
+                Body::Moon,
+                model,
+                (-mp).normalize_or_zero(),
+                NIGHT_SHADE,
+            ));
+        }
+        draws
+    }
+
+    /// When the selection changes to a body, smoothly pan and zoom to frame it
+    /// (keeping the current orientation, so it does not swing around).
     fn frame_on_select(&mut self, ui: &egui::Ui) {
         let id = Id::new("system_last_sel");
         let last: Option<Selection> = ui.data(|d| d.get_temp(id)).flatten();
         if last != *self.selection {
             if let Some(Selection::Body(body)) = *self.selection {
-                self.camera.frame(self.body_render(body), 6.0);
+                // Zoom close enough that the body reads as a sphere, not a dot.
+                let dist = (sphere_radius(body) * 12.0).max(0.8);
+                self.camera.frame(self.body_render(body), dist);
             }
             ui.data_mut(|d| d.insert_temp(id, *self.selection));
         }
@@ -433,6 +496,7 @@ impl SystemView<'_> {
         nearest: Option<Body>,
         pulse: f32,
     ) {
+        let marker_fade = smoothstep(4.0, 16.0, self.camera.distance);
         let earth = earth_render(self.sim);
         let r = moon_orbit_r(self.camera.distance);
         let ring: Vec<Vec3> = (0..=64)
@@ -455,7 +519,7 @@ impl SystemView<'_> {
             draw_body(
                 painter,
                 p,
-                3.2,
+                3.2 * marker_fade,
                 Color32::from_rgb(shade, shade, shade.saturating_add(8)),
                 "Moon",
                 Marks {
@@ -469,16 +533,24 @@ impl SystemView<'_> {
     }
 
     fn options(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        const PANEL_W: f32 = 188.0;
         egui::Area::new(ui.id().with("system_options"))
-            .fixed_pos(rect.right_top() + vec2(-126.0, 8.0))
+            .fixed_pos(rect.left_top() + vec2(12.0, 12.0))
+            .constrain_to(rect)
             .show(ui.ctx(), |ui| {
                 Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(110.0);
-                    ui.strong("Options");
-                    ui.checkbox(&mut self.layers.orbits, "Orbits");
-                    ui.checkbox(&mut self.layers.labels, "Labels");
-                    ui.checkbox(&mut self.layers.moon, "Moon (zoom in)");
-                    ui.checkbox(&mut self.layers.inset, "Earth-Moon inset");
+                    ui.set_width(PANEL_W);
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("{} View options", crate::ui::icons::GEAR))
+                            .size(15.0),
+                    )
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.checkbox(&mut self.layers.orbits, "Orbit lines");
+                        ui.checkbox(&mut self.layers.labels, "Labels");
+                        ui.checkbox(&mut self.layers.moon, "Moon (when zoomed in)");
+                        ui.checkbox(&mut self.layers.inset, "Earth-Moon inset");
+                    });
                 });
             });
     }
@@ -527,9 +599,45 @@ fn to_render(helio: DVec3) -> Vec3 {
     dir.normalize_or_zero() * scale(helio.length())
 }
 
-/// Compress AU distances logarithmically so inner and outer planets all fit.
-fn scale(au: f64) -> f32 {
-    (au as f32 + 1.0).ln() * 3.0
+/// `to_render` in the equatorial J2000 frame, so the Explorer (which works in
+/// equatorial coordinates) can place the same compressed system around a body.
+pub(crate) fn to_render_equatorial(helio: DVec3) -> Vec3 {
+    to_render(skynav::math::ecliptic_to_equatorial(helio))
+}
+
+/// Map AU distances to render units. Nearly linear (mild `^0.9` compression so
+/// the outer planets stay reachable), at a large scale so the system feels vast
+/// and the planets read as small bodies (Universe-Sandbox-like).
+pub(crate) fn scale(au: f64) -> f32 {
+    (au as f32).powf(0.9) * 12.0
+}
+
+/// Whether a render-space point projects on (or just off) the view, used to skip
+/// drawing bodies you would not reasonably see.
+fn on_screen(view_proj: Mat4, pos: Vec3, rect: Rect) -> bool {
+    project(view_proj, pos, rect).is_some_and(|p| rect.expand(48.0).contains(p))
+}
+
+/// Exaggerated render radius (in scene units) for a body's 3D sphere. Tunable.
+pub(crate) fn sphere_radius(body: Body) -> f32 {
+    match body {
+        Body::Sun => 0.5,
+        Body::Mercury => 0.06,
+        Body::Venus => 0.10,
+        Body::Earth => 0.10,
+        Body::Mars => 0.08,
+        Body::Jupiter => 0.28,
+        Body::Saturn => 0.24,
+        Body::Uranus => 0.16,
+        Body::Neptune => 0.16,
+        Body::Moon => 0.03,
+    }
+}
+
+/// Smooth Hermite interpolation, 0 below `lo` and 1 above `hi`.
+fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Highlight state for a drawn body.
@@ -548,23 +656,34 @@ fn draw_body(
     name: &str,
     m: Marks,
 ) {
+    // Anchor for halo/label even when the flat dot has faded out (the 3D sphere
+    // is the body up close); markers/labels still need a sensible radius.
+    let anchor = radius.max(4.0);
     if m.selected {
-        let halo = radius + 5.0 + m.pulse * 5.0;
+        let halo = anchor + 5.0 + m.pulse * 5.0;
         painter.circle_stroke(
             pos,
             halo,
             Stroke::new(1.5, Color32::from_rgb(120, 170, 255)),
         );
     }
-    let r = if m.hovered { radius + 1.5 } else { radius };
-    painter.circle_filled(pos, r, color);
+    if radius >= 0.6 {
+        let r = if m.hovered { radius + 1.5 } else { radius };
+        painter.circle_filled(pos, r, color);
+    } else if m.hovered {
+        painter.circle_stroke(
+            pos,
+            anchor,
+            Stroke::new(1.5, Color32::from_rgb(200, 215, 240)),
+        );
+    }
     let emphasised = m.selected || m.hovered;
     let label_color = if emphasised { Color32::WHITE } else { color };
     if emphasised {
-        label_at(painter, pos + vec2(r + 4.0, -7.0), name, label_color);
+        label_at(painter, pos + vec2(anchor + 4.0, -7.0), name, label_color);
     } else if m.labels {
         painter.text(
-            pos + vec2(r + 4.0, -7.0),
+            pos + vec2(anchor + 4.0, -7.0),
             egui::Align2::LEFT_TOP,
             name,
             FontId::proportional(12.0),
@@ -580,13 +699,15 @@ fn draw_path(
     points: &[Vec3],
     color: Color32,
 ) {
-    let mut prev = points.last().and_then(|&p| project(view_proj, p, rect));
+    let stroke = Stroke::new(1.0, color);
+    let mut prev = points.last().copied();
     for &point in points {
-        let cur = project(view_proj, point, rect);
-        if let (Some(p0), Some(p1)) = (prev, cur) {
-            painter.line_segment([p0, p1], Stroke::new(1.0, color));
+        if let Some(p0) = prev
+            && let Some(seg) = project_segment(view_proj, p0, point, rect)
+        {
+            painter.line_segment(seg, stroke);
         }
-        prev = cur;
+        prev = Some(point);
     }
 }
 

@@ -1,6 +1,7 @@
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, RenderState, ScreenDescriptor};
 use eframe::wgpu::{self, util::DeviceExt};
 use glam::{Mat4, Vec3};
+use skynav::Body;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -20,22 +21,43 @@ pub struct Uniforms {
 }
 
 impl Uniforms {
-    fn new(view_proj: Mat4, model: Mat4, sun_dir: Vec3, base_color: [f32; 3]) -> Self {
+    fn new(model: Mat4, sun_dir: Vec3, emissive: bool, min_shade: f32, opacity: f32) -> Self {
         let s = sun_dir.normalize_or_zero();
         Self {
-            view_proj: view_proj.to_cols_array(),
+            view_proj: Mat4::IDENTITY.to_cols_array(),
             model: model.to_cols_array(),
-            sun_dir: [s.x, s.y, s.z, 0.0],
-            base_color: [base_color[0], base_color[1], base_color[2], 1.0],
+            // sun_dir.w carries the emissive flag (the Sun is self-lit, no terminator).
+            sun_dir: [s.x, s.y, s.z, if emissive { 1.0 } else { 0.0 }],
+            // base_color.r is the night-side floor, base_color.g the opacity
+            // (the body you stand on dissolves as you touch down) and base_color.a
+            // the gamma flag (set per-frame in prepare).
+            base_color: [min_shade, opacity, 1.0, 1.0],
         }
     }
+
+    fn apply_view_proj(&mut self, view_proj: Mat4) {
+        self.view_proj = view_proj.to_cols_array();
+    }
+}
+
+/// Uniform stride per drawn body (a dynamic-offset slot, 256-byte aligned so it
+/// satisfies the default `min_uniform_buffer_offset_alignment`).
+const UNIFORM_STRIDE: u64 = 256;
+/// Maximum bodies drawn in a single scene callback (Sun + planets + a few moons).
+const MAX_DRAWS: usize = 16;
+
+/// One sphere to draw: its uniforms and which body's texture to bind.
+pub struct BodyDraw {
+    uniforms: Uniforms,
+    body: usize,
 }
 
 /// GPU resources for the globe, built once on eframe's wgpu device and stored
 /// in the renderer's callback resources.
 pub struct GlobeRenderer {
     pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    /// One bind group per body in `Body::ALL`, each holding that body's texture.
+    bind_groups: Vec<wgpu::BindGroup>,
     uniform_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -67,12 +89,11 @@ impl GlobeRenderer {
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globe_uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
+            size: UNIFORM_STRIDE * MAX_DRAWS as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let texture_view = load_earth_texture(&rs.device, &rs.queue);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("globe_sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -93,8 +114,10 @@ impl GlobeRenderer {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<Uniforms>() as u64
+                        ),
                     },
                     count: None,
                 },
@@ -117,24 +140,34 @@ impl GlobeRenderer {
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globe_bg"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+        let bind_groups = Body::ALL
+            .iter()
+            .map(|body| {
+                let texture_view = load_texture(&rs.device, &rs.queue, body_texture_bytes(*body));
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("globe_bg"),
+                    layout: &bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &uniform_buffer,
+                                offset: 0,
+                                size: wgpu::BufferSize::new(std::mem::size_of::<Uniforms>() as u64),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("globe_pl"),
@@ -167,14 +200,17 @@ impl GlobeRenderer {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(crate::gfx::depth_state(true)),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: rs.target_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    // Alpha blending lets the body you stand on dissolve into the
+                    // star sky on touchdown (opacity in base_color.g). At opacity
+                    // 1.0 this matches REPLACE, so every opaque sphere is unchanged.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -185,7 +221,7 @@ impl GlobeRenderer {
 
         Self {
             pipeline,
-            bind_group,
+            bind_groups,
             uniform_buffer,
             vertex_buffer,
             index_buffer,
@@ -195,9 +231,9 @@ impl GlobeRenderer {
     }
 }
 
-/// Per-frame data submitted with the paint callback.
+/// Per-frame data submitted with the paint callback: a list of spheres to draw.
 struct GlobeCallback {
-    uniforms: Uniforms,
+    draws: Vec<BodyDraw>,
 }
 
 impl CallbackTrait for GlobeCallback {
@@ -210,9 +246,15 @@ impl CallbackTrait for GlobeCallback {
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(renderer) = resources.get::<GlobeRenderer>() {
-            let mut uniforms = self.uniforms;
-            uniforms.base_color[3] = if renderer.needs_gamma { 1.0 } else { 0.0 };
-            queue.write_buffer(&renderer.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+            for (i, draw) in self.draws.iter().take(MAX_DRAWS).enumerate() {
+                let mut uniforms = draw.uniforms;
+                uniforms.base_color[3] = if renderer.needs_gamma { 1.0 } else { 0.0 };
+                queue.write_buffer(
+                    &renderer.uniform_buffer,
+                    i as u64 * UNIFORM_STRIDE,
+                    bytemuck::bytes_of(&uniforms),
+                );
+            }
         }
         Vec::new()
     }
@@ -225,28 +267,55 @@ impl CallbackTrait for GlobeCallback {
     ) {
         if let Some(r) = resources.get::<GlobeRenderer>() {
             render_pass.set_pipeline(&r.pipeline);
-            render_pass.set_bind_group(0, &r.bind_group, &[]);
             render_pass.set_vertex_buffer(0, r.vertex_buffer.slice(..));
             render_pass.set_index_buffer(r.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..r.index_count, 0, 0..1);
+            for (i, draw) in self.draws.iter().take(MAX_DRAWS).enumerate() {
+                let bind_group = &r.bind_groups[draw.body.min(r.bind_groups.len() - 1)];
+                let offset = (i as u64 * UNIFORM_STRIDE) as u32;
+                render_pass.set_bind_group(0, bind_group, &[offset]);
+                render_pass.draw_indexed(0..r.index_count, 0, 0..1);
+            }
         }
     }
 }
 
-/// Enqueue a lit globe into `rect`. Model rotation orients the surface;
-/// `sun_dir` is the direction to the Sun in the render frame.
-pub fn show(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    view_proj: Mat4,
-    model: Mat4,
-    sun_dir: Vec3,
-    base_color: [f32; 3],
-) {
-    let uniforms = Uniforms::new(view_proj, model, sun_dir, base_color);
+/// Build a draw for `body` with the given model matrix and Sun direction. The
+/// night side is rendered nearly black (realistic for the body you stand on).
+pub fn draw_body(body: Body, model: Mat4, sun_dir: Vec3) -> BodyDraw {
+    draw_body_lit(body, model, sun_dir, 0.0)
+}
+
+/// As `draw_body`, but with a `min_shade` floor on the unlit side so a far-off,
+/// back-lit body (a planet seen across the system) stays faintly visible instead
+/// of disappearing into black.
+pub fn draw_body_lit(body: Body, model: Mat4, sun_dir: Vec3, min_shade: f32) -> BodyDraw {
+    body_draw(body, model, sun_dir, min_shade, 1.0)
+}
+
+/// As `draw_body`, but with `opacity` (0..1) so the body you stand on can
+/// dissolve into a clean star sky as the camera touches down, instead of the
+/// old geometric shrink that read as the world collapsing beneath you.
+pub fn draw_body_faded(body: Body, model: Mat4, sun_dir: Vec3, opacity: f32) -> BodyDraw {
+    body_draw(body, model, sun_dir, 0.0, opacity)
+}
+
+fn body_draw(body: Body, model: Mat4, sun_dir: Vec3, min_shade: f32, opacity: f32) -> BodyDraw {
+    let index = Body::ALL.iter().position(|b| *b == body).unwrap_or(0);
+    BodyDraw {
+        uniforms: Uniforms::new(model, sun_dir, body == Body::Sun, min_shade, opacity),
+        body: index,
+    }
+}
+
+/// Enqueue many spheres sharing one camera. Each draw carries its own model and
+/// texture, depth-tested against each other (real 3D solar system).
+pub fn show_many(ui: &mut egui::Ui, rect: egui::Rect, view_proj: Mat4, mut draws: Vec<BodyDraw>) {
+    for draw in &mut draws {
+        draw.uniforms.apply_view_proj(view_proj);
+    }
     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
         rect,
-        GlobeCallback { uniforms },
+        GlobeCallback { draws },
     ));
 }
 
@@ -258,12 +327,30 @@ const EARTH_JPG: &[u8] = include_bytes!("../../assets/earth_16k.jpg");
 #[cfg(target_arch = "wasm32")]
 const EARTH_JPG: &[u8] = include_bytes!("../../assets/earth.jpg");
 
-/// Decode the bundled Blue Marble texture, build a full mip chain and upload it.
-/// The image is downscaled to fit the device's `max_texture_dimension_2d` so the
-/// high-resolution asset still loads on GPUs (and WebGPU) that cap below 16k.
-fn load_earth_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let mut image = image::load_from_memory(EARTH_JPG)
-        .expect("decode earth texture")
+/// Equirectangular surface map for each body (2k, CC-BY Solar System Scope),
+/// except Earth which keeps the bundled Blue Marble.
+fn body_texture_bytes(body: Body) -> &'static [u8] {
+    match body {
+        Body::Earth => EARTH_JPG,
+        Body::Sun => include_bytes!("../../assets/sun.jpg"),
+        Body::Mercury => include_bytes!("../../assets/mercury.jpg"),
+        Body::Venus => include_bytes!("../../assets/venus.jpg"),
+        Body::Moon => include_bytes!("../../assets/moon.jpg"),
+        Body::Mars => include_bytes!("../../assets/mars.jpg"),
+        Body::Jupiter => include_bytes!("../../assets/jupiter.jpg"),
+        Body::Saturn => include_bytes!("../../assets/saturn.jpg"),
+        Body::Uranus => include_bytes!("../../assets/uranus.jpg"),
+        Body::Neptune => include_bytes!("../../assets/neptune.jpg"),
+    }
+}
+
+/// Decode a bundled equirectangular texture, build a full mip chain and upload
+/// it. The image is downscaled to fit the device's `max_texture_dimension_2d` so
+/// the high-resolution Earth asset still loads on GPUs (and WebGPU) that cap
+/// below 16k.
+fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> wgpu::TextureView {
+    let mut image = image::load_from_memory(bytes)
+        .expect("decode body texture")
         .to_rgba8();
 
     let max_dim = device.limits().max_texture_dimension_2d;
@@ -283,7 +370,7 @@ fn load_earth_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Textu
     let mip_level_count = (width.max(height).max(1)).ilog2() + 1;
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("earth_texture"),
+        label: Some("body_texture"),
         size,
         mip_level_count,
         sample_count: 1,

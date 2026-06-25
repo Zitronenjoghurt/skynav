@@ -82,12 +82,12 @@ impl<'a> ChecklistPanel<'a> {
             .collect();
 
         let mut con: Vec<&Constellation> = self.constellations.iter().collect();
-        con.sort_by(|a, b| a.name.cmp(&b.name));
+        con.sort_by(|a, b| a.full_name().cmp(b.full_name()));
         let constellations = con
             .into_iter()
             .map(|c| Item {
                 key: constellation_key(&c.name),
-                label: c.name.clone(),
+                label: c.full_name().to_string(),
                 color: Color32::from_rgb(180, 190, 210),
                 select: None,
             })
@@ -156,11 +156,13 @@ impl Widget for ChecklistPanel<'_> {
                 ui.add_space(4.0);
 
                 let q = filter.trim().to_lowercase();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for group in &groups {
-                        self.group_ui(ui, group, &q);
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for group in &groups {
+                            self.group_ui(ui, group, &q);
+                        }
+                    });
             })
             .response;
 

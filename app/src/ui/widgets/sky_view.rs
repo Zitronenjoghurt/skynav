@@ -1,9 +1,10 @@
 use crate::gfx::LookAroundCamera;
 use crate::gfx::sky::{self, LineVertex, SkyInstance};
 use crate::ui::Selection;
+use crate::ui::icons;
 use crate::ui::overlay::{label_at, project};
 use egui::{Align2, Color32, FontId, Frame, Pos2, Rect, Response, Sense, Stroke, Widget};
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use skynav::math::ecliptic_to_equatorial;
 use skynav::sky::Horizontal;
@@ -11,9 +12,9 @@ use skynav::{Body, Constellation, Simulation, Star};
 
 const RADIUS: f32 = 1.0;
 const CONSTELLATION_COLOR: [f32; 3] = [0.16, 0.26, 0.42];
-const HORIZON_COLOR: [f32; 3] = [0.30, 0.40, 0.28];
+const HORIZON_COLOR: [f32; 3] = [0.16, 0.62, 0.50];
 const GRID_COLOR: [f32; 3] = [0.11, 0.15, 0.22];
-const ECLIPTIC_COLOR: [f32; 3] = [0.34, 0.28, 0.12];
+const ECLIPTIC_COLOR: [f32; 3] = [0.70, 0.50, 0.10];
 /// Click/hover pick radius in pixels (squared).
 const PICK_DIST_SQ: f32 = 196.0;
 
@@ -150,12 +151,17 @@ impl SkyView<'_> {
         }
 
         for body in Body::ALL {
-            if body == Body::Earth {
+            if body == self.sim.observer_body {
                 continue;
             }
             if let Some(h) = self.sim.observed_body(body) {
-                let (size, color, brightness) = body_style(body);
-                instances.push(billboard(h, size, color, brightness));
+                let (base, color) = body_style(body);
+                let (size, brightness) = apparent_look(base, self.sim.apparent_magnitude(body));
+                let inst = billboard(h, size, color, brightness);
+                if body == Body::Sun {
+                    instances.extend(sky::sun_glow(&inst));
+                }
+                instances.push(inst);
             }
         }
         instances
@@ -195,13 +201,16 @@ impl SkyView<'_> {
     }
 
     fn push_grid(&self, lines: &mut Vec<LineVertex>, horizon: Mat3) {
-        // Meridians (constant RA).
+        // Align the grid's poles/equator to the body you observe from, not always
+        // Earth's, so it is correct from Mars, the Moon, etc.
+        let rot = self.grid_rot();
+        // Meridians (constant RA), running nearly to the poles (±88°).
         for m in 0..12 {
             let ra = m as f32 / 12.0 * std::f32::consts::TAU;
             let mut prev = None;
-            for d in -8..=8 {
-                let dec = d as f32 * 10f32.to_radians();
-                let p = horizon * unit(ra, dec) * RADIUS;
+            for d in -11..=11 {
+                let dec = d as f32 * 8f32.to_radians();
+                let p = horizon * rot * unit(ra, dec) * RADIUS;
                 if let Some(q) = prev {
                     lines.push(line_vertex(q, GRID_COLOR));
                     lines.push(line_vertex(p, GRID_COLOR));
@@ -209,13 +218,14 @@ impl SkyView<'_> {
                 prev = Some(p);
             }
         }
-        // Parallels (constant Dec).
-        for d in [-60, -30, 0, 30, 60] {
+        // Parallels (constant Dec), with a tight ring near each pole (±85°) so the
+        // converging RA lines close on a clean cap.
+        for d in [-88, -85, -60, -30, 0, 30, 60, 85, 88] {
             let dec = (d as f32).to_radians();
             let mut prev = None;
             for r in 0..=36 {
                 let ra = r as f32 / 36.0 * std::f32::consts::TAU;
-                let p = horizon * unit(ra, dec) * RADIUS;
+                let p = horizon * rot * unit(ra, dec) * RADIUS;
                 if let Some(q) = prev {
                     lines.push(line_vertex(q, GRID_COLOR));
                     lines.push(line_vertex(p, GRID_COLOR));
@@ -223,6 +233,13 @@ impl SkyView<'_> {
                 prev = Some(p);
             }
         }
+    }
+
+    /// Rotation aligning the equatorial grid to the body the observer stands on
+    /// (~identity for Earth, whose mean pole defines the J2000 equatorial frame).
+    fn grid_rot(&self) -> Mat3 {
+        let pole = (self.sim.orientation().as_mat3() * Vec3::Z).normalize_or_zero();
+        Mat3::from_quat(Quat::from_rotation_arc(Vec3::Z, pole))
     }
 
     fn draw_overlay(
@@ -263,7 +280,7 @@ impl SkyView<'_> {
                     painter.text(
                         p,
                         Align2::CENTER_CENTER,
-                        &constellation.name,
+                        constellation.full_name(),
                         FontId::proportional(11.0),
                         Color32::from_rgb(110, 130, 165),
                     );
@@ -273,7 +290,7 @@ impl SkyView<'_> {
 
         if self.layers.labels {
             for body in Body::ALL {
-                if body == Body::Earth {
+                if body == self.sim.observer_body {
                     continue;
                 }
                 if let Some(h) = self.sim.observed_body(body)
@@ -348,23 +365,34 @@ impl SkyView<'_> {
     }
 
     fn layer_controls(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        const PANEL_W: f32 = 214.0;
         egui::Area::new(ui.id().with("sky_layers"))
-            .fixed_pos(rect.right_top() + egui::vec2(-158.0, 8.0))
+            .fixed_pos(rect.left_top() + egui::vec2(12.0, 12.0))
+            .constrain_to(rect)
             .show(ui.ctx(), |ui| {
                 Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(140.0);
-                    ui.strong("Layers");
-                    let l = &mut *self.layers;
-                    ui.checkbox(&mut l.constellations, "Constellations");
-                    ui.checkbox(&mut l.constellation_names, "Names");
-                    ui.checkbox(&mut l.labels, "Object labels");
-                    ui.checkbox(&mut l.horizon, "Horizon");
-                    ui.checkbox(&mut l.equatorial_grid, "Equatorial grid");
-                    ui.checkbox(&mut l.ecliptic, "Ecliptic");
-                    ui.add_space(2.0);
-                    ui.label("Faintest magnitude")
-                        .on_hover_text("Hide stars dimmer than this.");
-                    ui.add(egui::Slider::new(&mut l.mag_limit, 1.0..=6.5).fixed_decimals(1));
+                    ui.set_width(PANEL_W);
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("{} View options", icons::GEAR)).size(15.0),
+                    )
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let l = &mut *self.layers;
+                        ui.strong("In the sky");
+                        ui.checkbox(&mut l.constellations, "Constellation figures");
+                        ui.add_enabled(
+                            l.constellations,
+                            egui::Checkbox::new(&mut l.constellation_names, "Constellation names"),
+                        );
+                        ui.checkbox(&mut l.labels, "Object labels");
+                        ui.checkbox(&mut l.ecliptic, "Ecliptic (Sun's path)");
+                        ui.checkbox(&mut l.equatorial_grid, "Equatorial grid (RA / Dec)");
+                        ui.checkbox(&mut l.horizon, "Horizon & compass");
+                        ui.add_space(2.0);
+                        ui.label("Faintest stars")
+                            .on_hover_text("Hide stars dimmer than this.");
+                        ui.add(egui::Slider::new(&mut l.mag_limit, 1.0..=6.5).fixed_decimals(1));
+                    });
                 });
             });
     }
@@ -430,7 +458,7 @@ impl SkyView<'_> {
         };
 
         for body in Body::ALL {
-            if body == Body::Earth {
+            if body == self.sim.observer_body {
                 continue;
             }
             if let Some(h) = self.sim.observed_body(body)
@@ -484,7 +512,7 @@ impl SkyView<'_> {
         };
 
         for body in Body::ALL {
-            if body == Body::Earth {
+            if body == self.sim.observer_body {
                 continue;
             }
             if let Some(h) = self.sim.observed_body(body)
@@ -606,22 +634,42 @@ fn horizon_point(i: usize, segments: usize) -> Vec3 {
 /// `pub(crate)` so the globe background can reuse the same look.
 pub(crate) fn star_style(magnitude: f32) -> (f32, f32) {
     let t = ((6.5 - magnitude) / 6.5).clamp(0.0, 1.0);
-    let size = 0.0016 + 0.011 * t * t;
-    let brightness = (1.7 - 0.22 * magnitude).clamp(0.12, 2.2);
+    // Bright stars are a touch larger; faint ones stay near a single pixel. The
+    // brightness range is wide so the additive Gaussian core saturates the
+    // brightest stars to white while the faintest are barely-there specks.
+    let size = 0.0015 + 0.0085 * t * t;
+    let brightness = (1.85 - 0.32 * magnitude).clamp(0.08, 3.0);
     (size, brightness)
 }
 
-pub(crate) fn body_style(body: Body) -> (f32, [f32; 3], f32) {
+/// Per-body size scale and colour for a billboard. The scale is a relative
+/// prominence (the Sun a bit chunkier, planets near 1); the actual angular size
+/// is driven by apparent brightness in `apparent_look`, so a body shrinks when
+/// seen from far away rather than keeping a fixed disk (which made the Moon read
+/// bigger than Earth from Mars).
+pub(crate) fn body_style(body: Body) -> (f32, [f32; 3]) {
     match body {
-        Body::Sun => (0.06, [1.0, 0.93, 0.75], 2.2),
-        Body::Moon => (0.05, [0.85, 0.86, 0.92], 1.2),
-        Body::Mercury => (0.012, [0.80, 0.75, 0.70], 0.8),
-        Body::Venus => (0.020, [1.0, 0.97, 0.85], 1.8),
-        Body::Mars => (0.016, [0.95, 0.50, 0.35], 1.1),
-        Body::Jupiter => (0.022, [0.90, 0.82, 0.70], 1.5),
-        Body::Saturn => (0.020, [0.90, 0.85, 0.65], 1.1),
-        Body::Uranus => (0.012, [0.70, 0.85, 0.90], 0.6),
-        Body::Neptune => (0.012, [0.60, 0.70, 0.95], 0.6),
-        Body::Earth => (0.0, [0.0, 0.0, 0.0], 0.0),
+        Body::Sun => (1.7, [1.0, 0.93, 0.75]),
+        Body::Moon => (1.0, [0.85, 0.86, 0.92]),
+        Body::Mercury => (0.7, [0.80, 0.75, 0.70]),
+        Body::Venus => (1.0, [1.0, 0.97, 0.85]),
+        Body::Mars => (0.85, [0.95, 0.50, 0.35]),
+        Body::Jupiter => (1.25, [0.90, 0.82, 0.70]),
+        Body::Saturn => (1.15, [0.90, 0.85, 0.65]),
+        Body::Uranus => (0.8, [0.70, 0.85, 0.90]),
+        Body::Neptune => (0.8, [0.60, 0.70, 0.95]),
+        Body::Earth => (1.0, [0.40, 0.60, 1.0]),
     }
+}
+
+/// Billboard size and brightness for a body of apparent magnitude `mag` and
+/// per-body `scale`. Both size and glow grow with brightness, so a body that is
+/// far away (faint) shrinks to a small dim dot and a near/bright one is a larger
+/// glowing disk. Shared by the Sky and the Explorer so a body looks the same in
+/// both, and a bright planet always reads larger than a faint one.
+pub(crate) fn apparent_look(scale: f32, mag: f64) -> (f32, f32) {
+    let m = mag as f32;
+    let brightness = (1.6 - 0.28 * m).clamp(0.1, 3.0);
+    let size = scale * (0.004 + 0.006 * brightness);
+    (size, brightness)
 }

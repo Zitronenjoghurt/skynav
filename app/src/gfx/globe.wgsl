@@ -40,12 +40,18 @@ fn fs(in: VSOut) -> @location(0) vec4<f32> {
     // so the lit cap and its seasonal tilt match the sunrise/sunset calculation.
     // Ambient is kept tiny because the manual sRGB encode below lifts darks a
     // lot - a larger ambient made the night side (and polar night) read as lit.
+    // base_color.r is a per-draw night-side floor: 0 for the body you stand on
+    // (realistic dark night) but a little light for far-off planets, so a
+    // back-lit world (e.g. Earth seen from Mars) does not vanish into black.
+    // sun_dir.w flags an emissive body (the Sun): fully self-lit, no terminator.
     let ambient = 0.004;
-    let shade = ambient + 1.08 * ndl;
-    var color = albedo * shade;
+    let shade = max(ambient + 1.08 * ndl, u.base_color.r);
+    var color = select(albedo * shade, albedo, u.sun_dir.w > 0.5);
     // Encode to sRGB ourselves when the egui target is not an sRGB format.
     if (u.base_color.a > 0.5) {
         color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
     }
-    return vec4<f32>(color, 1.0);
+    // base_color.g is opacity: the body you stand on fades out as you touch down
+    // so the surface look-around is a clean sky rather than a shrinking globe.
+    return vec4<f32>(color, u.base_color.g);
 }

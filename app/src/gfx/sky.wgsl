@@ -40,9 +40,15 @@ fn vs(
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
     let d = length(in.uv);
-    let glow = smoothstep(1.0, 0.0, d);
-    let core = smoothstep(0.5, 0.0, d) * 0.6;
-    let a = glow + core;
+    if (d >= 1.0) {
+        discard;
+    }
+    // A crisp point of light: a tight Gaussian core plus a faint, quickly
+    // decaying halo - reads as a real star/planet rather than a fuzzy disk, and
+    // sums nicely under additive blending so bright objects saturate to white.
+    let core = exp(-d * d * 8.0);
+    let halo = pow(1.0 - d, 3.0) * 0.22;
+    let a = core + halo;
     return vec4<f32>(encode(in.color * a), a);
 }
 

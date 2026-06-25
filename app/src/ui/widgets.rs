@@ -4,10 +4,10 @@ pub mod events_panel;
 pub mod globe_view;
 pub mod info_panel;
 pub mod observer_panel;
+pub mod panel_ui;
 pub mod scrubber;
 pub mod sky_view;
 pub mod system_view;
-pub mod time_panel;
 pub mod view_panel;
 pub mod visible_panel;
 
@@ -20,6 +20,5 @@ pub use observer_panel::ObserverPanel;
 pub use scrubber::Scrubber;
 pub use sky_view::{SkyLayers, SkyView};
 pub use system_view::{OrbitCache, SystemLayers, SystemView};
-pub use time_panel::TimePanel;
 pub use view_panel::ViewPanel;
 pub use visible_panel::VisiblePanel;

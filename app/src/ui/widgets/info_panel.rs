@@ -1,7 +1,8 @@
 use crate::ui::observed::Observed;
+use crate::ui::widgets::panel_ui::{self, kv};
 use crate::ui::{Selection, icons};
 use crate::util::humanize_until;
-use egui::{Button, Color32, Grid, Response, RichText, Widget};
+use egui::{Button, Color32, Response, RichText, Widget};
 use skynav::math::AU_KM;
 use skynav::{Body, Epoch, Simulation, Star};
 
@@ -103,21 +104,24 @@ impl InfoPanel<'_> {
         let geo_km = geo_au * AU_KM;
         let radius_km = body.mean_radius_km();
 
-        Grid::new("info_body").num_columns(2).show(ui, |ui| {
+        panel_ui::section(ui, "Position");
+        row(
+            ui,
+            "Mean radius",
+            &format!("{radius_km:.0} km"),
+            "Mean volumetric radius.",
+        );
+        if body != Body::Sun {
             row(
                 ui,
-                "Mean radius",
-                &format!("{radius_km:.0} km"),
-                "Mean volumetric radius.",
+                "From Sun",
+                &format!("{helio_au:.4} AU"),
+                "Heliocentric distance in astronomical units.",
             );
-            if body != Body::Sun {
-                row(
-                    ui,
-                    "From Sun",
-                    &format!("{helio_au:.4} AU"),
-                    "Heliocentric distance in astronomical units.",
-                );
-            }
+        }
+        // "From Earth" and geocentric RA/Dec are self-referential for Earth itself
+        // (distance to self is zero, direction undefined), so they are skipped.
+        if body != Body::Earth {
             row(
                 ui,
                 "From Earth",
@@ -139,28 +143,30 @@ impl InfoPanel<'_> {
                     "Apparent diameter as seen from Earth.",
                 );
             }
-            let period = body.orbital_period_days();
-            if period > 0.0 {
-                row(
-                    ui,
-                    "Orbital period",
-                    &format_period(period),
-                    "Sidereal period of one orbit.",
-                );
-            }
-            if body == Body::Moon {
-                let (frac, waxing) = self.sim.moon_illumination();
-                row(
-                    ui,
-                    "Phase",
-                    &format!(
-                        "{} ({:.0}% lit)",
-                        moon_phase_name(frac, waxing),
-                        frac * 100.0
-                    ),
-                    "Illuminated fraction of the lunar disc.",
-                );
-            }
+        }
+        let period = body.orbital_period_days();
+        if period > 0.0 {
+            row(
+                ui,
+                "Orbital period",
+                &format_period(period),
+                "Sidereal period of one orbit.",
+            );
+        }
+        if body == Body::Moon {
+            let (frac, waxing) = self.sim.moon_illumination();
+            row(
+                ui,
+                "Phase",
+                &format!(
+                    "{} ({:.0}% lit)",
+                    moon_phase_name(frac, waxing),
+                    frac * 100.0
+                ),
+                "Illuminated fraction of the lunar disc.",
+            );
+        }
+        if body != Body::Earth {
             let (ra_h, dec_deg) = ra_dec(self.sim.geocentric_equatorial(body));
             row(
                 ui,
@@ -168,42 +174,45 @@ impl InfoPanel<'_> {
                 &format!("{ra_h:.2}h  {dec_deg:+.2}°"),
                 "Geocentric right ascension and declination (J2000).",
             );
-            self.horizon_rows(ui, self.sim.observed_body(body));
-        });
+        }
 
-        let rs = crate::ui::cache::body_rise_set(ui, self.sim, body);
-        self.rise_set_grid(ui, "info_riseset_body", rs);
+        // Where it sits in your sky (and when it rises/sets) is meaningless for
+        // the very body you are standing on.
+        if body == self.sim.observer_body {
+            panel_ui::section(ui, "In your sky");
+            ui.weak("You are standing on this body, so its altitude, azimuth and rise/set times don't apply.");
+        } else {
+            self.horizon_rows(ui, self.sim.observed_body(body));
+            let rs = crate::ui::cache::body_rise_set(ui, self.sim, body);
+            self.rise_set_grid(ui, "info_riseset_body", rs);
+        }
     }
 
-    fn rise_set_grid(&self, ui: &mut egui::Ui, id: &str, rs: skynav::RiseSet) {
+    fn rise_set_grid(&self, ui: &mut egui::Ui, _id: &str, rs: skynav::RiseSet) {
         let now = self.sim.clock.epoch;
-        ui.add_space(6.0);
-        ui.label(RichText::new("Today (UTC)").strong())
-            .on_hover_text("Rise, set and culmination over the current UTC day.");
-        Grid::new(id).num_columns(2).show(ui, |ui| {
-            row(
-                ui,
-                "Rise",
-                &format_when(rs.rise, now),
-                "When it climbs above the horizon.",
-            );
-            row(
-                ui,
-                "Transit",
-                &format!(
-                    "{} ({:+.1}°)",
-                    format_when(rs.transit, now),
-                    rs.transit_altitude
-                ),
-                "Highest point (crossing the meridian) and its altitude.",
-            );
-            row(
-                ui,
-                "Set",
-                &format_when(rs.set, now),
-                "When it drops below the horizon.",
-            );
-        });
+        panel_ui::section(ui, "Today (UTC)");
+        row(
+            ui,
+            "Rise",
+            &format_when(rs.rise, now),
+            "When it climbs above the horizon.",
+        );
+        row(
+            ui,
+            "Transit",
+            &format!(
+                "{} ({:+.1}°)",
+                format_when(rs.transit, now),
+                rs.transit_altitude
+            ),
+            "Highest point (crossing the meridian) and its altitude.",
+        );
+        row(
+            ui,
+            "Set",
+            &format_when(rs.set, now),
+            "When it drops below the horizon.",
+        );
     }
 
     fn star_info(&mut self, ui: &mut egui::Ui, star: &Star) {
@@ -229,25 +238,24 @@ impl InfoPanel<'_> {
         .on_hover_text("Approximate colour from the B-V index.");
         ui.add_space(4.0);
 
-        Grid::new("info_star").num_columns(2).show(ui, |ui| {
-            row(
-                ui,
-                "Magnitude",
-                &format!("{:.2}", star.magnitude),
-                "Apparent visual magnitude (lower is brighter).",
-            );
-            row(
-                ui,
-                "RA / Dec",
-                &format!(
-                    "{:.2}h  {:+.2}°",
-                    star.ra.to_degrees() / 15.0,
-                    star.dec.to_degrees()
-                ),
-                "Catalogue right ascension and declination (J2000).",
-            );
-            self.horizon_rows(ui, self.sim.observed_star(star));
-        });
+        panel_ui::section(ui, "Position");
+        row(
+            ui,
+            "Magnitude",
+            &format!("{:.2}", star.magnitude),
+            "Apparent visual magnitude (lower is brighter).",
+        );
+        row(
+            ui,
+            "RA / Dec",
+            &format!(
+                "{:.2}h  {:+.2}°",
+                star.ra.to_degrees() / 15.0,
+                star.dec.to_degrees()
+            ),
+            "Catalogue right ascension and declination (J2000).",
+        );
+        self.horizon_rows(ui, self.sim.observed_star(star));
 
         let day = day_start(self.sim.clock.epoch);
         let rs = skynav::events::star_rise_set(&self.sim.observer, star.ra, star.dec, day);
@@ -266,17 +274,19 @@ impl InfoPanel<'_> {
 
     fn horizon_rows(&self, ui: &mut egui::Ui, observed: Option<skynav::Horizontal>) {
         if let Some(h) = observed {
-            let visible = if h.altitude >= 0.0 {
-                "above horizon"
+            let above = h.altitude >= 0.0;
+            let (visible, color) = if above {
+                ("above horizon", Color32::from_rgb(120, 215, 150))
             } else {
-                "below horizon"
+                ("below horizon", Color32::from_rgb(196, 142, 120))
             };
-            row(
+            panel_ui::kv_colored(
                 ui,
                 "Altitude",
                 &format!("{:+.2}°  ({visible})", h.altitude_deg()),
-                "Angle above the local horizon, with refraction.",
-            );
+                color,
+            )
+            .on_hover_text("Angle above the local horizon, with refraction.");
             row(
                 ui,
                 "Azimuth",
@@ -296,13 +306,7 @@ fn heading(ui: &mut egui::Ui, text: &str) {
 }
 
 fn row(ui: &mut egui::Ui, key: &str, value: &str, tip: &str) {
-    if key.is_empty() {
-        ui.label("");
-    } else {
-        ui.label(RichText::new(key).weak()).on_hover_text(tip);
-    }
-    ui.label(value).on_hover_text(tip);
-    ui.end_row();
+    kv(ui, key, value).on_hover_text(tip);
 }
 
 fn format_angle(rad: f64) -> String {

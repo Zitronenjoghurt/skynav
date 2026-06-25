@@ -14,8 +14,9 @@ bytemuck = { version = "1.23", features = ["derive"] }
 eframe = { version = "0.34.2", default-features = false, features = ["persistence", "wgpu"] }
 egui = "0.34.2"
 egui_dock = { version = "0.19.1", features = ["serde"] }
-egui_extras = { version = "0.34.2", default-features = false }
+egui_extras = { version = "0.34.2", default-features = false, features = ["datepicker", "serde"] }
 egui-phosphor = { version = "0.12.0", features = ["regular"] }
+jiff = { version = "0.2", default-features = false }
 glam = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 hifitime = { workspace = true }
